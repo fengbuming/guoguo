@@ -1,0 +1,20 @@
+# 备份与分发压缩包
+_backup_full_*/
+_backup_pro_*/
+*.zip
+*.ipa
+
+# 其它独立项目 / 大体积目录（各含自己的仓库或体积过大）
+ipa_out/
+尘·外/
+guoapp_ios/
+__MACOSX/
+.DS_Store
+
+# 本机网络信息
+_ipconfig.txt
+
+# 探针中间产物（含带时效的 CDN 直链，不宜入库）
+_hgtest/*.txt
+_hgtest/*.json
+_hgtest/*.bak
