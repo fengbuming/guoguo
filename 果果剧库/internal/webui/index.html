@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#f7f7f2">
-<title>果果剧库</title>
+<title>短剧库</title>
 <script src="/assets/preferences.js"></script>
 <script src="/assets/theme.js"></script>
 <link rel="stylesheet" href="/assets/app.css">
@@ -17,7 +17,7 @@
 <body>
 <a class="skip-link" href="#workspaceMain">跳到主要内容</a>
 <header class="app-header">
-  <a class="brand" href="#library" aria-label="果果剧库首页"><span class="brand-mark" aria-hidden="true"><span data-icon="brand"></span></span><span class="brand-name">果果剧库</span></a>
+  <a class="brand" href="#library" aria-label="短剧库首页"><span class="brand-mark" aria-hidden="true"><span data-icon="brand"></span></span><span class="brand-name">短剧库</span></a>
   <nav class="desktop-nav" aria-label="主导航">
     <button class="nav-button" data-page="library" aria-current="page"><span data-icon="library"></span>剧库</button>
     <button class="nav-button" data-page="following"><span data-icon="bookmark"></span>追剧<span class="nav-count" data-follow-count hidden></span></button>
@@ -43,6 +43,7 @@
         <label class="catalog-select"><select id="channelSelect" aria-label="分类筛选"><option value="">全部分类</option></select><span data-icon="chevron"></span></label>
         <label class="catalog-select"><select id="releaseFilter" aria-label="状态筛选"><option value="">全部状态</option><option value="finished">完结</option><option value="ongoing">连载</option><option value="unknown">状态未知</option></select><span data-icon="chevron"></span></label>
         <label class="catalog-select"><select id="sortSelect" aria-label="剧库排序"><option value="default">默认排序</option><option value="newest">最新上线</option><option value="oldest">最早上线</option><option value="heat">热度最高</option><option value="views">播放最多</option><option value="title">名称排序</option></select><span data-icon="chevron"></span></label>
+        <button id="vipFilterBtn" class="quiet catalog-action vip-filter" data-vip-filter aria-pressed="false" hidden>隐藏 VIP</button>
         <button id="openRankingsBtn" class="quiet catalog-action" aria-label="站点榜单" title="站点榜单" aria-haspopup="dialog" aria-controls="rankingPanel"><span class="button-content"><span data-icon="chart"></span><span class="control-label">榜单</span></span></button><button id="batchSelectBtn" data-download-only class="quiet catalog-action" aria-label="批量选择" title="批量选择" aria-pressed="false"><span class="button-content"><span data-icon="select"></span><span id="batchSelectLabel" class="control-label">批量选择</span></span></button>
       </div>
     </div>
@@ -69,7 +70,7 @@
     <p class="page-footnote">新集提示来自已更新的剧库资料。完整播放记录仍保留在“历史记录”。</p>
   </section>
   <section class="page-view" id="downloadsPage" data-view="downloads" aria-label="下载管理" hidden>
-    <div class="page-heading"><div><h1>下载管理 <span id="taskCount" class="small"></span></h1><p>文件保存在运行果果剧库的电脑。</p></div><button id="downloadLocationBtn" class="quiet button-content" aria-label="更改下载保存位置"><span data-icon="settings"></span>更改目录</button></div>
+    <div class="page-heading"><div><h1>下载管理 <span id="taskCount" class="small"></span></h1><p>文件保存在运行短剧库的电脑。</p></div><button id="downloadLocationBtn" class="quiet button-content" aria-label="更改下载保存位置"><span data-icon="settings"></span>更改目录</button></div>
     <div class="download-destination"><span data-icon="folder"></span><span class="small">保存至</span><span id="downloadLocation" class="download-path">正在读取保存目录…</span></div>
     <div class="download-summary"><div class="summary-tile"><strong id="downloadActiveCount">0</strong><span>正在进行</span></div><div class="summary-tile"><strong id="downloadCompleteCount">0</strong><span>已完成分集</span></div><div class="summary-tile"><strong id="downloadWrittenBytes">0 B</strong><span>任务累计写入</span></div></div>
     <div class="download-filters"><input id="taskSearch" type="search" placeholder="搜索下载合集" aria-label="搜索下载合集"><select id="taskStatus" aria-label="下载状态"><option value="">全部状态</option><option value="completed">已完成</option><option value="failed">失败</option><option value="unfinished">未完成</option><option value="running">进行中</option><option value="paused">已暂停</option><option value="canceled">已取消</option></select><select id="releaseStatus" aria-label="剧集完结状态"><option value="">全部完结状态</option><option value="finished">完结</option><option value="ongoing">未完结</option><option value="unknown">状态未知</option></select></div>
@@ -116,7 +117,7 @@
   <dialog id="rankingPanel" class="ranking-dialog" aria-labelledby="rankingTitle">
     <div class="ranking-header">
       <div class="heading"><h2 id="rankingTitle">站点榜单</h2><div class="ranking-heading-actions"><button id="refreshRankingBtn" class="secondary">刷新</button><button id="closeRankingsBtn" class="secondary" aria-label="关闭榜单">关闭</button></div></div>
-      <div class="ranking-controls"><select id="rankingSource" aria-label="榜单站源"></select><label class="download-quality" data-download-only>下载画质<select data-download-quality aria-label="榜单下载清晰度"></select></label><div id="rankingTabs" class="ranking-tabs" role="tablist" aria-label="榜单类型"></div></div>
+      <div class="ranking-controls"><select id="rankingSource" aria-label="榜单站源"></select><button id="rankingVipFilterBtn" class="quiet vip-filter" data-vip-filter aria-pressed="false" hidden>隐藏 VIP</button><label class="download-quality" data-download-only>下载画质<select data-download-quality aria-label="榜单下载清晰度"></select></label><div id="rankingTabs" class="ranking-tabs" role="tablist" aria-label="榜单类型"></div></div>
       <p id="rankingSummary" class="ranking-summary" aria-live="polite">按站点名次展示，独立于剧库筛选。</p>
     </div>
     <div id="rankingContent" class="ranking-content" role="tabpanel" tabindex="0" aria-label="榜单列表" aria-busy="false"><ol id="rankingList" class="ranking-list"></ol></div>
@@ -149,7 +150,7 @@
         <label>密码（可选）<input id="proxyPassword" type="password" autocomplete="new-password"></label>
       </div>
       <label class="playback-option"><input id="groupBySource" type="checkbox"><span>按站源分类保存下载和 Emby 内容</span></label>
-      <p class="small">默认关闭。开启后新剧存入红果子目录；已有剧继续使用原目录，文件不会自动移动。</p>
+      <p class="small">默认关闭。开启后新剧存入黄果、黄豆、红果子目录；已有剧继续使用原目录，文件不会自动移动。</p>
       <div class="toolbar"><button id="saveSettingsBtn">保存并应用</button><button id="checkNetworkBtn" class="secondary">检测当前连接</button><span id="settingsStatus" class="small" aria-live="polite"></span></div>
       <details class="playback-settings"><summary>播放与资源限制</summary>
         <label class="playback-option"><input id="originalPlaybackEnabled" type="checkbox"><span>优先原始 MP4 / HLS 播放</span></label>
@@ -195,7 +196,7 @@
       <label class="account-check"><input id="embyEnabled" type="checkbox"><span>启用自动同步</span></label>
       <div class="settings-grid">
         <label class="wide">媒体库输出目录<input id="embyOutputDir" type="text" maxlength="2048" required placeholder="程序所在服务器的文件夹"></label>
-        <label class="wide">Emby 能访问的剧库地址<input id="embyBaseURL" type="url" maxlength="2048" placeholder="http://剧库服务器:8999"></label>
+        <label class="wide">Emby 能访问的剧库地址<input id="embyBaseURL" type="url" maxlength="2048" placeholder="http://剧库服务器:8998"></label>
         <label>检查间隔（分钟）<input id="embyInterval" type="number" min="5" max="1440" value="60" required></label>
       </div>
       <fieldset class="account-source-fieldset"><legend>自动加入的范围</legend><label class="account-check"><input id="embyFollowing" type="checkbox" checked><span>我的追剧<small>当前管理员的“在看”和“想看”，其他用户的记录独立保留。</small></span></label><label class="account-check"><input id="embyDownloads" type="checkbox" checked><span>下载完成的合集<small>已下载分集优先读取本地文件，其余分集可在线播放。</small></span></label></fieldset>
@@ -313,8 +314,9 @@
 <script src="/assets/player-media.js"></script>
 <script src="/assets/player-capabilities.js"></script>
 <script src="/assets/player-session.js"></script>
-<script src="/assets/player.js?v=20260918-buffer"></script>
+<script src="/assets/player.js?v=20261017-stall"></script>
 <script src="/assets/library-sort.js"></script>
+<script src="/assets/vip-filter.js"></script>
 <script src="/assets/rankings.js"></script>
 <script type="module" src="/assets/main.js"></script>
 </body>

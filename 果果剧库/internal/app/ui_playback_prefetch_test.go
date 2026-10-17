@@ -161,3 +161,34 @@ func TestPlaybackCloseAndExpiryCancelPrefetch(t *testing.T) {
 		})
 	}
 }
+
+func TestPlaybackNativePrefetchReadyAfterFirstSegments(t *testing.T) {
+	cache := &playbackNative{ctx: context.Background(), firstBatch: make(chan struct{}), segments: map[int][]byte{}}
+	if cache.prefetchReady() {
+		t.Fatal("尚未产出分片时不应放行预取")
+	}
+	cache.segments[0] = []byte("segment")
+	if !cache.prefetchReady() {
+		t.Fatal("已产出分片时应放行预取")
+	}
+}
+
+// 转码 / native 模式下，等「整集缓冲结束」才允许预取等于不预取；
+// 当前集已经出片（用户能正常播放）时就该放行下一集的后台预取。
+func TestPlaybackPrefetchAllowedOnceNativeHasSegments(t *testing.T) {
+	app, session := prefetchFixtureApp(t)
+	app.mediaResources().settings.MaxPrefetchJobs = 0 // 放行后不真的发起预取，避免触网
+	session.state = "streaming"
+	session.media = nil
+	native := &playbackNative{ctx: context.Background(), firstBatch: make(chan struct{}), segments: map[int][]byte{}}
+	session.native = native
+	writer := prefetchRequest(app, `{"session":"fixture","episode":2,"run":4,"version":1}`)
+	if writer.Code != http.StatusConflict {
+		t.Fatalf("未出片时仍应拒绝预取，实际 %d", writer.Code)
+	}
+	native.segments[0] = []byte("segment")
+	writer = prefetchRequest(app, `{"session":"fixture","episode":2,"run":4,"version":2}`)
+	if writer.Code == http.StatusConflict {
+		t.Fatal("当前集已出片时不应再以「尚未缓冲完成」拒绝预取")
+	}
+}

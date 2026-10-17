@@ -235,7 +235,10 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 	if session.native != nil {
 		state, _ = session.native.state()
 	}
-	if !input.Cancel && state != "ended" && session.media == nil {
+	// 转码 / native 模式下等「整集缓冲结束」才预取等于不预取（要等整集下载转码完），
+	// 因此只要当前集已经出片、用户能正常播放，就放行下一集的后台预取。
+	nativeReady := session.native != nil && session.native.prefetchReady()
+	if !input.Cancel && state != "ended" && session.media == nil && !nativeReady {
 		app.playbackMu.Unlock()
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": "当前集尚未缓冲完成"})
 		return
@@ -261,7 +264,7 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 	}
 	cache := newPlaybackPrefetch(input.Episode, input.Run)
 	cache.quality, cache.remux = session.quality, remux
-	cache.planOnly = session.media != nil
+	cache.planOnly = session.media != nil && session.native == nil
 	cache.ctx = context.WithValue(cache.ctx, playbackQualityKey{}, cache.quality)
 	cache.ctx = context.WithValue(cache.ctx, playbackRemuxKey{}, remux)
 	session.prefetch = cache

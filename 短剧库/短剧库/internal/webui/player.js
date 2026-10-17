@@ -240,6 +240,8 @@
     streamComplete = false;
     prefetchAttempted = 0;
     prefetchPreparing = false;
+    stalledAt = 0;
+    clearStallTimer();
     clearTimeout(prefetchStatusTimer);
     prefetchVersion++;
     prefetchStatus.hidden = true;
@@ -805,9 +807,45 @@
   });
   video.addEventListener('timeupdate', () => {if (!loading && Number.isFinite(video.currentTime)) {lastPosition = video.currentTime; if (!video.paused && !video.seeking) saveHistory();} updateBufferStatus(); maybePrefetchNext();});
   for (const type of ['progress', 'loadedmetadata', 'durationchange', 'emptied']) video.addEventListener(type, updateBufferStatus);
-  video.addEventListener('playing', () => {desiredPlayback = true; if (!loading && !errorText.textContent) {historyPlayed = true; historyCompleted = false; statusText.textContent = '正在播放'; saveHistory(true);} maybePrefetchNext();});
-  video.addEventListener('waiting', () => {if (!loading && !errorText.textContent) statusText.textContent = '正在缓冲…';});
-  video.addEventListener('pause', () => {if (!loading && !video.error) desiredPlayback = false; if (!loading) saveHistory(true); if (!loading && !video.ended && !errorText.textContent) statusText.textContent = '已暂停';});
+  video.addEventListener('playing', () => {stalledAt = 0; clearStallTimer(); desiredPlayback = true; if (!loading && !errorText.textContent) {historyPlayed = true; historyCompleted = false; statusText.textContent = '正在播放'; saveHistory(true);} maybePrefetchNext();});
+  // —— 卡顿保底恢复 ——
+  // 播放中长时间停在「正在缓冲…」时：用户点暂停再点播放即触发恢复；卡太久也会自动尝试一次。
+  // 优先重载当前流（native HLS 的分片通常已在服务端缓存，几乎无需等待），仍无进展再重建会话。
+  let stalledAt = 0, stallTimer = null, stallRecoveredAt = 0;
+  function clearStallTimer() {clearTimeout(stallTimer); stallTimer = null;}
+  function markStalled() {
+    if (loading || !currentIndex || errorText.textContent || video.ended) return;
+    stalledAt = Date.now();
+    clearStallTimer();
+    stallTimer = setTimeout(() => {if (stalledAt && !video.paused) recoverFromStall(false);}, 15000);
+  }
+  function recoverFromStall(manual) {
+    const stalledFor = Date.now() - stalledAt;
+    clearStallTimer();
+    if (!stalledAt || !panel.open || !currentIndex || loading || recoveryPromise || !sessionAvailable || !stalledFor) {stalledAt = 0; return;}
+    const threshold = manual ? 3000 : 12000;
+    const cooldown = manual ? 5000 : 15000;
+    if (stalledFor < threshold || Date.now() - stallRecoveredAt < cooldown) {stalledAt = 0; return;}
+    stalledAt = 0;
+    stallRecoveredAt = Date.now();
+    statusText.textContent = '正在恢复播放…';
+    if (transport === 'hls' && video.currentSrc) {
+      const position = recoveryPosition();
+      const restore = () => {
+        video.removeEventListener('loadedmetadata', restore);
+        try {video.currentTime = position;} catch (error) {}
+        video.play().catch(() => {});
+      };
+      video.addEventListener('loadedmetadata', restore);
+      video.load();
+      // 重载后仍无进展，升级为重建会话
+      setTimeout(() => {if (panel.open && currentIndex && !video.paused && video.readyState < 3) playEpisode(currentIndex, recoveryPosition(), true, true);}, 5000);
+      return;
+    }
+    playEpisode(currentIndex, recoveryPosition(), true, true);
+  }
+  video.addEventListener('waiting', () => {if (!loading && !errorText.textContent) statusText.textContent = '正在缓冲…'; markStalled();});
+  video.addEventListener('pause', () => {clearStallTimer(); if (!loading && !video.error) desiredPlayback = false; if (!loading) saveHistory(true); if (!loading && !video.ended && !errorText.textContent) statusText.textContent = '已暂停';});
   video.addEventListener('error', async () => {
     if (!video.error || !video.hasAttribute('src') || !panel.open) return;
     const version = streamVersion, code = video.error.code;
@@ -853,7 +891,8 @@
   document.addEventListener('visibilitychange', () => {if (document.hidden) saveHistory(true); else wakePlayback();});
   window.addEventListener('pagehide', () => {lastPosition = recoveryPosition(); dispose(true);});
   for (const type of ['pageshow', 'online']) window.addEventListener(type, wakePlayback);
-  video.addEventListener('play', () => {if (!loading) wakePlayback();});
+  // 卡住时点暂停再点播放，立即触发恢复
+  video.addEventListener('play', () => {if (stalledAt) recoverFromStall(true); if (!loading) wakePlayback();});
 
   function showEpisodePanel() {
     renderEpisodes(Math.floor(Math.max(0, currentIndex - 1) / 30));

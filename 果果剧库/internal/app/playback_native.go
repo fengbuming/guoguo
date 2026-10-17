@@ -425,3 +425,19 @@ func (cache *playbackNative) state() (string, error) {
 	}
 	return "buffering", nil
 }
+
+// prefetchReady 判断当前集是否已经产出可播放数据，可以把资源让给下一集的预取。
+//
+// 原先要求当前集完全缓冲结束（ended）才允许预取下一集，但转码/整段拉取模式下
+// 这几乎等同于「永远不预取」——必须等整集下完才开始准备下一集。实际上只要用户
+// 已经能正常播放（首批分片已产出），后台预取就不会抢走播放所需的带宽。
+func (cache *playbackNative) prefetchReady() bool {
+	select {
+	case <-cache.firstBatch:
+		return true
+	default:
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	return len(cache.segments) > 0
+}
