@@ -120,7 +120,7 @@ func (app *UIApp) resolveMediaSession(ctx, preparation context.Context, task Tas
 }
 
 func (app *UIApp) attachMediaGateway(media *playbackMediaSession, base, query string) {
-	proxy := &hlsProxy{downloader: app.downloader, credentials: media.media.credentials, client: &http.Client{Transport: app.downloader.client.Transport, Jar: app.downloader.client.Jar, CheckRedirect: app.downloader.client.CheckRedirect}, base: base, referer: media.media.Referer,
+	proxy := &hlsProxy{downloader: app.downloader, credentials: media.media.credentials, client: &http.Client{Transport: app.downloader.client.Transport, Jar: app.downloader.client.Jar, CheckRedirect: app.downloader.client.CheckRedirect}, resumeClient: app.downloader.mediaClient, base: base, referer: media.media.Referer,
 		key: media.key, mediaKey: media.media.HLSKey, assets: map[string]hlsAsset{}, assetIDs: map[string]string{},
 		retries: app.downloader.cfg.Retries, diagnostic: app.downloader.recordDiagnostic, query: query,
 		acquire: func(ctx context.Context) (func(), error) { return app.mediaResources().acquire(ctx, "media", false) }}

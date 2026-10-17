@@ -97,7 +97,9 @@
     if (!mediaPlan || !sessionAvailable || !currentIndex) return false;
     if (mediaPlan.delivery === 'redirect') planMode = 'proxy';
     else if (error.playbackNetwork) {
-      if (networkRefreshes >= 1) return false;
+      // 视频 CDN 常在中途断流，自动重建会话比让用户手动点“重试播放”体验更好，
+      // 但必须封顶，避免上游持续异常时反复重开。
+      if (networkRefreshes >= 2) return false;
       networkRefreshes++;
       planMode = 'proxy';
     } else {

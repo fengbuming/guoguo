@@ -29,6 +29,9 @@ type hlsProxy struct {
 	downloader  *Downloader
 	credentials *providerMediaCredentials
 	client      *http.Client
+	// resumeClient 专供续读使用：不复用连接，避免复用到已被服务端单方面
+	// 关闭的陈旧连接（表现为刚续读几十 KB 就 EOF，白白消耗一次续读预算）。
+	resumeClient *http.Client
 	server      *http.Server
 	base        string
 	referer     string
@@ -49,6 +52,14 @@ type hlsProxy struct {
 
 var hlsURIAttribute = regexp.MustCompile(`URI="([^"]+)"`)
 
+// resumeDo 发起续读请求，优先使用不复用连接的专用客户端。
+func (proxy *hlsProxy) resumeDo(request *http.Request) (*http.Response, error) {
+	if proxy.resumeClient != nil {
+		return proxy.resumeClient.Do(request)
+	}
+	return proxy.client.Do(request)
+}
+
 func (d *Downloader) newHLSProxy(ctx context.Context, media providerMedia, key []byte) (*hlsProxy, error) {
 	nonce := randomHex(16)
 	if nonce == "" {
@@ -62,6 +73,7 @@ func (d *Downloader) newHLSProxy(ctx context.Context, media providerMedia, key [
 		downloader:  d,
 		credentials: media.credentials,
 		client:      &http.Client{Transport: d.client.Transport, Jar: d.client.Jar, CheckRedirect: d.client.CheckRedirect},
+		resumeClient: d.mediaClient,
 		base:        "http://" + listener.Addr().String() + "/" + nonce + "/",
 		referer:     media.Referer,
 		key:         key,

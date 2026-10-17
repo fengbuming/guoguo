@@ -13,8 +13,10 @@ import (
 )
 
 type Downloader struct {
-	cfg                 Config
-	client              *http.Client
+	cfg    Config
+	client *http.Client
+	// mediaClient 专供媒体续读：不复用连接，避免续读踩到服务端已关闭的陈旧连接。
+	mediaClient          *http.Client
 	providerMu          sync.Mutex
 	providerHosts       map[string]string
 	hongguoOnce         sync.Once
@@ -62,7 +64,20 @@ func NewDownloader(cfg Config) *Downloader {
 	router.configure(cfg.ProxyURL)
 	transport.Proxy = router.proxy
 	transport.DialContext = newStallGuardDialContext()
-	return &Downloader{cfg: cfg, client: &http.Client{Transport: newImageTransport(transport, transport), Timeout: 45 * time.Second}, providerHosts: map[string]string{}, limiter: newRequestLimiter(cfg.RequestConcurrency, time.Duration(cfg.RequestIntervalMS)*time.Millisecond), proxyRouter: router, diagnostics: newDiagnosticLog(cfg.dataDirectory())}
+	return &Downloader{cfg: cfg, client: &http.Client{Transport: newImageTransport(transport, transport), Timeout: 45 * time.Second}, mediaClient: &http.Client{Transport: newMediaResumeTransport(transport)},
+		providerHosts: map[string]string{}, limiter: newRequestLimiter(cfg.RequestConcurrency, time.Duration(cfg.RequestIntervalMS)*time.Millisecond), proxyRouter: router, diagnostics: newDiagnosticLog(cfg.dataDirectory())}
+}
+
+// newMediaResumeTransport 复制主 transport 的全部配置（代理、TLS、拨号器含
+// stall guard），但关闭连接复用，供媒体续读单独使用。
+func newMediaResumeTransport(base *http.Transport) *http.Transport {
+	if base == nil {
+		return nil
+	}
+	cloned := base.Clone()
+	cloned.DisableKeepAlives = true
+	cloned.MaxIdleConns, cloned.MaxIdleConnsPerHost = 0, 0
+	return cloned
 }
 
 func (d *Downloader) DownloadEpisode(ctx context.Context, task Task) error {

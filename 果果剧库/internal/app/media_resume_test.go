@@ -122,8 +122,10 @@ func TestMediaProxyExhaustsBodyRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
+	// 传输层失败（连接被对端断开）退避很短但仍有上限：首次 + 6 次续读，
+	// 每次续读只推进 13 字节，因此最终只拿到 7*13 字节后必须报失败。
 	body, err := io.ReadAll(response.Body)
-	if err == nil || calls.Load() != 3 || !bytes.Equal(body, payload[:39]) || proxy.Err() == nil {
+	if err == nil || calls.Load() != 7 || !bytes.Equal(body, payload[:91]) || proxy.Err() == nil {
 		t.Fatalf("exhausted transfer was not bounded or reported: bytes=%d calls=%d read=%v proxy=%v", len(body), calls.Load(), err, proxy.Err())
 	}
 }
@@ -402,9 +404,56 @@ func TestMediaProxyGivesUpAfterRepeatedForbiddenContinuation(t *testing.T) {
 	if proxy.Err() == nil {
 		t.Fatal("持续 403 时应记录失败原因")
 	}
-	// Retries=3 → maxAttempts=2：首次 + 2 次续读
-	if calls.Load() != 3 {
-		t.Fatalf("请求次数 = %d, want 3", calls.Load())
+	// Retries=3 → 续读预算 6 次：首次 + 6 次续读，之后必须放弃并给出原因
+	if calls.Load() != 7 {
+		t.Fatalf("请求次数 = %d, want 7", calls.Load())
+	}
+}
+
+// 续读预算与初始请求重试解耦：一集 20MB 常需续读 3~5 次，2 次预算远远不够。
+func TestMediaResumeBudgetAndBackoff(t *testing.T) {
+	if got := mediaResumeAttempts(3); got != 6 {
+		t.Fatalf("mediaResumeAttempts(3) = %d, want 6", got)
+	}
+	if got := mediaResumeAttempts(1); got < 6 {
+		t.Fatalf("mediaResumeAttempts(1) = %d, want >= 6", got)
+	}
+	// 传输层失败（连接被断）重连成本低，固定短退避
+	if got := mediaResumeBackoff(4, 0); got != 300*time.Millisecond {
+		t.Fatalf("transport backoff = %v, want 300ms", got)
+	}
+	// 服务端拒绝则递增退避并封顶，避免每次都撞同一个节点
+	if got := mediaResumeBackoff(1, http.StatusForbidden); got != 600*time.Millisecond {
+		t.Fatalf("status backoff(1) = %v, want 600ms", got)
+	}
+	if got := mediaResumeBackoff(9, http.StatusServiceUnavailable); got != 1500*time.Millisecond {
+		t.Fatalf("status backoff(9) = %v, want 1500ms", got)
+	}
+}
+
+// 续读必须走不复用连接的专用客户端：复用到服务端已关闭的陈旧连接会以
+// 「刚续读几十 KB 就 EOF」的形式白白吃掉一次续读预算。
+func TestMediaProxyUsesResumeClientForContinuation(t *testing.T) {
+	var resumeCalls atomic.Int32
+	proxy, client := mediaProxyFixture(t, func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Length", "100")
+		writer.Header().Set("ETag", `"fixture-v1"`)
+		_, _ = io.WriteString(writer, "0123456789")
+	})
+	proxy.resumeClient = &http.Client{Transport: rankingTransport(func(request *http.Request) (*http.Response, error) {
+		resumeCalls.Add(1)
+		return nil, errors.New("续读走专用客户端")
+	})}
+	response, err := client.Get(proxy.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if _, err := io.ReadAll(response.Body); err == nil {
+		t.Fatal("续读全部失败时应返回错误")
+	}
+	if resumeCalls.Load() != 6 {
+		t.Fatalf("续读请求次数 = %d, want 6（走专用客户端且用满预算）", resumeCalls.Load())
 	}
 }
 

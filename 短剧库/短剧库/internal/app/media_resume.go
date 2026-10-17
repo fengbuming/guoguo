@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,36 @@ func mediaRequestAttempts(retries int) int {
 	return min(3, max(1, retries))
 }
 
+// mediaResumeAttempts 返回单集播放允许的续读次数。
+//
+// 与初始请求的重试次数（mediaRequestAttempts）分开：实测视频 CDN 的单条连接
+// 平均只能稳定传输 2~5MB 就被服务端关闭（节点差异大，观测范围 0.2~12.6MB），
+// 一集 20MB 左右的剧集通常需要续读 3~5 次才能读完。沿用下载场景的 2 次上限
+// 会让大量本可恢复的播放被判死，因此续读单独给一个更宽容的预算。
+func mediaResumeAttempts(retries int) int {
+	return max(6, mediaRequestAttempts(retries)*2)
+}
+
+// mediaResumeStallLimit 限制由「连接静默挂起」触发的续读次数。stall 每次都要等
+// 满读超时（30s）才被发现，反复 stall 说明链路本身有问题，继续重试既慢又难奏效，
+// 因此单独设一个较小的上限，避免单次播放卡上几分钟。
+const mediaResumeStallLimit = 2
+
+// mediaResumeBackoff 返回第 n 次续读前的等待时间。
+//
+// status == 0 表示传输层失败（连接被对端断开、读超时等），重连成本低，快速重试；
+// 带状态码的失败（403 / 429 / 5xx）多半是节点策略，稍作退避换一个节点更可能成功。
+func mediaResumeBackoff(attempt, status int) time.Duration {
+	if status == 0 {
+		return 300 * time.Millisecond
+	}
+	backoff := time.Duration(attempt) * 600 * time.Millisecond
+	if backoff > 1500*time.Millisecond {
+		backoff = 1500 * time.Millisecond
+	}
+	return backoff
+}
+
 // retryableMediaStatus 判断续读遇到的状态码是否值得再试一次。
 //
 // 在原有（408 / 429 / 5xx）基础上放宽到 403 / 404 / 410：视频 CDN 常按节点做
@@ -90,6 +121,7 @@ type resumableMediaReader struct {
 	resumable   bool
 	attempts    int
 	maxAttempts int
+	stalls      int
 	pending     error
 	failure     error
 	recovered   bool
@@ -98,7 +130,7 @@ type resumableMediaReader struct {
 func (proxy *hlsProxy) mediaReader(request *http.Request, response *http.Response) *resumableMediaReader {
 	reader := &resumableMediaReader{
 		proxy: proxy, request: request.Clone(request.Context()), body: response.Body,
-		length: -1, maxAttempts: mediaRequestAttempts(proxy.retries) - 1,
+		length: -1, maxAttempts: mediaResumeAttempts(proxy.retries),
 		etag:     strings.TrimSpace(response.Header.Get("ETag")),
 		modified: strings.TrimSpace(response.Header.Get("Last-Modified")),
 	}
@@ -186,11 +218,15 @@ func (reader *resumableMediaReader) Read(buffer []byte) (int, error) {
 func (reader *resumableMediaReader) resume() error {
 	_ = reader.body.Close()
 	reader.body = http.NoBody
+	if errors.Is(reader.pending, os.ErrDeadlineExceeded) {
+		reader.stalls++
+	}
 	var lastErr error
-	for reader.attempts < reader.maxAttempts {
+	var lastStatus int
+	for reader.attempts < reader.maxAttempts && reader.stalls <= mediaResumeStallLimit {
 		ctx := reader.request.Context()
 		if reader.attempts > 0 {
-			timer := time.NewTimer(time.Duration(reader.attempts) * 600 * time.Millisecond)
+			timer := time.NewTimer(mediaResumeBackoff(reader.attempts, lastStatus))
 			select {
 			case <-timer.C:
 			case <-ctx.Done():
@@ -212,7 +248,7 @@ func (reader *resumableMediaReader) resume() error {
 			reader.proxy.diagnostic(diagnosticEvent{Level: "warn", Event: "media.resume", Host: reader.request.URL.Hostname(),
 				OffsetBytes: reader.span.start + reader.read, TotalBytes: reader.span.total, Attempt: reader.attempts, Message: "媒体连接中断，正在续读"})
 		}
-		response, err := reader.proxy.client.Do(request)
+		response, err := reader.proxy.resumeDo(request)
 		if err != nil {
 			lastErr = err
 			continue
@@ -223,6 +259,7 @@ func (reader *resumableMediaReader) resume() error {
 		}
 		_ = response.Body.Close()
 		lastErr = err
+		lastStatus = response.StatusCode
 		if !retryableMediaStatus(response.StatusCode) {
 			return err
 		}

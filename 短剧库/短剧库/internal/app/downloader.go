@@ -20,8 +20,10 @@ import (
 )
 
 type Downloader struct {
-	cfg                   Config
-	client                *http.Client
+	cfg    Config
+	client *http.Client
+	// mediaClient 专供媒体续读：不复用连接，避免续读踩到服务端已关闭的陈旧连接。
+	mediaClient           *http.Client
 	huangdouDetails       map[string]huangdouDetailEntry
 	huangdouDetailPending map[string]*huangdouDetailCall
 	providerMu            sync.Mutex
@@ -95,7 +97,20 @@ func NewDownloader(cfg Config) *Downloader {
 	}
 	jar, _ := cookiejar.New(nil)
 	downloader.client = &http.Client{Transport: images, Timeout: 45 * time.Second, Jar: jar}
+	downloader.mediaClient = &http.Client{Transport: newMediaResumeTransport(transport), Jar: jar, CheckRedirect: downloader.client.CheckRedirect}
 	return downloader
+}
+
+// newMediaResumeTransport 复制主 transport 的全部配置（代理、TLS、拨号器含
+// stall guard），但关闭连接复用，供媒体续读单独使用。
+func newMediaResumeTransport(base *http.Transport) *http.Transport {
+	if base == nil {
+		return nil
+	}
+	cloned := base.Clone()
+	cloned.DisableKeepAlives = true
+	cloned.MaxIdleConns, cloned.MaxIdleConnsPerHost = 0, 0
+	return cloned
 }
 
 func (d *Downloader) DownloadEpisode(ctx context.Context, task Task) error {
