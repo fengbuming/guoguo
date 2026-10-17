@@ -61,6 +61,7 @@ func NewDownloader(cfg Config) *Downloader {
 	router := &proxyRouter{}
 	router.configure(cfg.ProxyURL)
 	transport.Proxy = router.proxy
+	transport.DialContext = newStallGuardDialContext()
 	return &Downloader{cfg: cfg, client: &http.Client{Transport: newImageTransport(transport, transport), Timeout: 45 * time.Second}, providerHosts: map[string]string{}, limiter: newRequestLimiter(cfg.RequestConcurrency, time.Duration(cfg.RequestIntervalMS)*time.Millisecond), proxyRouter: router, diagnostics: newDiagnosticLog(cfg.dataDirectory())}
 }
 

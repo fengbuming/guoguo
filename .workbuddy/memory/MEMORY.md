@@ -61,6 +61,13 @@
 - 根因：`media_resume.go` 的 `resume()` 对 `status < 500` 直接放弃重试，403 只试 1 次即判死。而实测 CDN 的 403 是**按节点的偶发防盗链拒绝**（同一 URL 直连 206；带 `Referer: hongguoduanju.com` 时 `v96-reading-videocdn.qznovelvod.com` 返回 403），并发 8 次/串行 6 次 Range 均正常，非限流也非 URL 过期。
 - 修复：新增 `retryableMediaStatus()` **白名单**（403/404/410/408/429/5xx 重试，200 与 400/401/416 不重试）；退避 250ms → 600ms。注意必须用白名单，用「排除法」会把 200 纳入重试从而破坏 `TestMediaProxyRejectsUnsafeContinuation`。
 
+### 播放静默挂起（2026-10-17 修复）
+
+- 症状：手机局域网播放「看几集就卡住当前集、无任何提示」，返回重进恢复；日志里卡住时段**无任何 media 事件**。
+- 根因：播放链路 `proxy.client`（`playback_gateway.go` / `download_hls.go`）复用 downloader Transport 但**无 `http.Client.Timeout`**，`ResponseHeaderTimeout=20s` 只管 header；CDN 连接 TCP 半开时 `body.Read()` 永久阻塞，续读机制无从触发。
+- 修复：`stallGuardConn` —— 每次 `Read` 前 `SetReadDeadline(now+30s)`（`connReadStallTimeout`），stall 超阈值返回 `os.ErrDeadlineExceeded`，落入既有 `resume()` 续读。是**空闲超时**（有数据即顺延），不误伤慢速/长播放；对 H2 是连接级空闲检测。完全版挂在 `safeDNSDialer.dial()`（`network_dns_cdn.go`）；专用版无 safeDNSDialer，用 `network_stall_guard.go` 的 `newStallGuardDialContext()` 挂 `transport.DialContext`。
+- 测试：两版各有 `network_stall_guard_test.go`（3 用例）。
+
 ## 红果探针
 
 `D:/AI/guoguo/_hgtest/`：`main.go`（取址+解密+ffmpeg 验证，支持 `FIXTURE=1` 输出夹具、`VERIFY=1` 端到端）、`sign.go`（六头签名）、`crypto.go`（URL 解密）、`key.go`（密钥派生+ffmpeg）。可复用于后续复测。
@@ -103,6 +110,21 @@
 ## 测试构造要点
 
 - 集成测试若走真实网络，必须用 `NewDownloader(cfg)` 而非 `&Downloader{cfg:...}`——后者 `limiter` 与 `client` 均为 nil，`doPreparedCatalogRequest` 会 panic。
+
+## Git 仓库与推送（2026-10-16 建立）
+
+- **仓库根：`D:/AI/guoguo`**（`git init` 于 2026-10-16 建立）。注意外层 `D:/AI` 也是一个 git 仓库（2 个提交、HEAD tree 为空、无 remote），但它**从未跟踪** `guoguo/`，两者互不干扰。
+- 远程：`https://github.com/fengbuming/guoguo.git`，**私有**，默认分支 `master`（gh 建仓时按本地分支名）。一次仓库同时容纳 `短剧库/短剧库`（完全版）与 `果果剧库`（专用版）。
+- **GitHub 账号是 `fengbuming`**（不是 mingbingfeng）；`gh` CLI 已认证，`gh repo create <name> --private --source=. --remote=origin --push` 可直接建仓。
+- **推送必踩的坑**：git 全局配了 `http.proxy`/`https.proxy` = `http://127.0.0.1:10808`，该端口**没有服务监听**，git 一律连接失败；直连 GitHub 也不通。实际可用的代理是 **`127.0.0.1:7897`**（Windows 系统代理 `ProxyServer`，常驻监听）。推送命令：
+  ```
+  git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push
+  ```
+  若嫌麻烦可改全局：`git config --global http.proxy http://127.0.0.1:7897`（同设 https.proxy）。`gh` 不受 git 代理影响，一直可用。
+- **`.gitignore`**：仓库根一份，排除备份目录、所有 zip/ipa、`ipa_out/`、`尘·外/`、`guoapp_ios/`（自带独立 .git）、`__MACOSX/`、`_ipconfig.txt`、`_hgtest/*.{txt,json,bak}`（含时效 CDN 直链）。
+  - 项目自带的 `短剧库/短剧库/.gitignore` 已排除 `/data/`、`/dist/`、`/短剧下载/`、`config.json`、`accounts.json` 所在目录与 ffmpeg 二进制。**专用版原本缺 `.gitignore`，已从完全版复制一份**——否则 `data/`（12M，含 admin 密码哈希）会被提交。
+  - 源码内的 `internal/app/data/juku.json` 只是默认配置（下载目录/并发/代理），非敏感，正常入库。
+- 首次提交：`fe086c8`，641 个文件。中文路径在 `git status` 中默认被转义成八进制，查看时用 `git -c core.quotepath=false status`。
 
 ## 路径与运行注意
 
