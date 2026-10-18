@@ -264,6 +264,11 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 	}
 	cache := newPlaybackPrefetch(input.Episode, input.Run)
 	cache.quality, cache.remux = session.quality, remux
+	// MSE / 原始直连模式只做地址解析（planOnly）：这两种模式播放时字节本来就要经过
+	// 服务端代理，预取的价值在于提前完成取址/解密，让连播切换秒开；真缓存 32MB
+	// 反而白白占用一倍带宽。native HLS 模式（手机）则真正缓存首批分片，因为
+	// native 管线启动慢（下载+转码），提前缓存对切集流畅度收益最大。
+	// 预取 acquire 是 optional（前台播放占用资源时自动跳过，不会拖慢当前集）。
 	cache.planOnly = session.media != nil && session.native == nil
 	cache.ctx = context.WithValue(cache.ctx, playbackQualityKey{}, cache.quality)
 	cache.ctx = context.WithValue(cache.ctx, playbackRemuxKey{}, remux)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -70,6 +71,10 @@ func mediaResumeAttempts(retries int) int {
 // 因此单独设一个较小的上限，避免单次播放卡上几分钟。
 const mediaResumeStallLimit = 2
 
+// mediaResumeAttemptsPerHost 是单个 CDN 节点上的连续失败上限，达到后换备用节点。
+// 实测坏节点会持续几十秒不响应（续读最坏观测到 173 秒才恢复），换节点远快于死磕。
+const mediaResumeAttemptsPerHost = 2
+
 // mediaResumeBackoff 返回第 n 次续读前的等待时间。
 //
 // status == 0 表示传输层失败（连接被对端断开、读超时等），重连成本低，快速重试；
@@ -125,6 +130,11 @@ type resumableMediaReader struct {
 	pending     error
 	failure     error
 	recovered   bool
+	// alternates 是同一资源的备用 CDN 节点地址；alternateIndex 指向当前使用的备用
+	// （-1 表示主地址）；hostAttempts 是当前节点上的连续失败次数。
+	alternates     []string
+	alternateIndex int
+	hostAttempts   int
 }
 
 func (proxy *hlsProxy) mediaReader(request *http.Request, response *http.Response) *resumableMediaReader {
@@ -140,6 +150,7 @@ func (proxy *hlsProxy) mediaReader(request *http.Request, response *http.Respons
 	if response.ContentLength > 0 {
 		reader.length = response.ContentLength
 	}
+	reader.alternateIndex = -1
 	if response.StatusCode == http.StatusOK && reader.length > 0 && response.Header.Get("Content-Range") == "" {
 		reader.span = mediaByteRange{end: reader.length - 1, total: reader.length}
 		reader.resumable = true
@@ -215,6 +226,27 @@ func (reader *resumableMediaReader) Read(buffer []byte) (int, error) {
 	}
 }
 
+// switchMediaHost 换到下一个备用 CDN 节点，成功返回 true。
+// 换节点时重置校验器：不同节点的 ETag / Last-Modified 本就不同，继续校验会误报「资源已变化」。
+func (reader *resumableMediaReader) switchMediaHost() bool {
+	for reader.alternateIndex+1 < len(reader.alternates) {
+		reader.alternateIndex++
+		next, err := url.Parse(reader.alternates[reader.alternateIndex])
+		if err != nil || next.Host == "" {
+			continue
+		}
+		reader.request.URL = next
+		reader.hostAttempts = 0
+		reader.validator, reader.etag, reader.modified = "", "", ""
+		if reader.proxy.diagnostic != nil {
+			reader.proxy.diagnostic(diagnosticEvent{Level: "warn", Event: "media.failover", Host: next.Hostname(),
+				OffsetBytes: reader.span.start + reader.read, TotalBytes: reader.span.total, Attempt: reader.attempts, Message: "当前 CDN 节点响应异常，切换到备用节点"})
+		}
+		return true
+	}
+	return false
+}
+
 func (reader *resumableMediaReader) resume() error {
 	_ = reader.body.Close()
 	reader.body = http.NoBody
@@ -224,6 +256,10 @@ func (reader *resumableMediaReader) resume() error {
 	var lastErr error
 	var lastStatus int
 	for reader.attempts < reader.maxAttempts && reader.stalls <= mediaResumeStallLimit {
+		// 当前节点连续失败达到上限时换到备用节点；没有备用则留在当前节点继续（仍受总预算限制）。
+		if reader.hostAttempts >= mediaResumeAttemptsPerHost {
+			reader.switchMediaHost()
+		}
 		ctx := reader.request.Context()
 		if reader.attempts > 0 {
 			timer := time.NewTimer(mediaResumeBackoff(reader.attempts, lastStatus))
@@ -251,16 +287,24 @@ func (reader *resumableMediaReader) resume() error {
 		response, err := reader.proxy.resumeDo(request)
 		if err != nil {
 			lastErr = err
+			lastStatus = 0
+			reader.hostAttempts++
 			continue
 		}
 		if err = reader.validateContinuation(response); err == nil {
 			reader.body = response.Body
+			reader.hostAttempts = 0
 			return nil
 		}
 		_ = response.Body.Close()
 		lastErr = err
 		lastStatus = response.StatusCode
+		reader.hostAttempts++
 		if !retryableMediaStatus(response.StatusCode) {
+			// 「资源已变化」等不该重试的状态，换节点（校验器已重置）仍可能成功
+			if reader.switchMediaHost() {
+				continue
+			}
 			return err
 		}
 	}

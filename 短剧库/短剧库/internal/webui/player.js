@@ -822,10 +822,13 @@
   function recoverFromStall(manual) {
     const stalledFor = Date.now() - stalledAt;
     clearStallTimer();
-    if (!stalledAt || !panel.open || !currentIndex || loading || recoveryPromise || !sessionAvailable || !stalledFor) {stalledAt = 0; return;}
-    const threshold = manual ? 3000 : 12000;
-    const cooldown = manual ? 5000 : 15000;
-    if (stalledFor < threshold || Date.now() - stallRecoveredAt < cooldown) {stalledAt = 0; return;}
+    // starved：播放位置数据不足（卡住的真实判据），不依赖卡住时长
+    const starved = video.readyState < 3 || bufferedAhead() < 1;
+    // 手动：只要当前位置数据不足就恢复；自动：需持续卡住 12 秒
+    if (!panel.open || !currentIndex || loading || recoveryPromise || !sessionAvailable) {stalledAt = 0; return;}
+    if (manual && !stalledAt && !starved) {stalledAt = 0; return;}
+    if (!manual && (!stalledAt || stalledFor < 12000)) {stalledAt = 0; return;}
+    if (Date.now() - stallRecoveredAt < (manual ? 4000 : 15000)) {stalledAt = 0; return;}
     stalledAt = 0;
     stallRecoveredAt = Date.now();
     statusText.textContent = '正在恢复播放…';
@@ -880,6 +883,18 @@
     else if (episodes.length) recoverPlayback(currentIndex || 1, lastPosition, true);
     else reopen(currentIndex || 1, lastPosition);
   });
+  // 手动重载当前集：清掉卡顿标记与恢复冷却，从当前位置强制重建播放
+  function reloadPlayback() {
+    if (!panel.open || !currentIndex || !episodes.length) return;
+    stalledAt = 0;
+    clearStallTimer();
+    stallRecoveredAt = 0;
+    recoveryAttempts = [];
+    statusText.textContent = '正在重新加载…';
+    if (sessionAvailable) playEpisode(currentIndex, recoveryPosition(), true, true);
+    else recoverPlayback(currentIndex, recoveryPosition(), true);
+  }
+  for (const id of ['reloadPlaybackBtn', 'reloadPlaybackVideoBtn']) node(id)?.addEventListener('click', reloadPlayback);
   node('playbackRate').addEventListener('change', () => {video.playbackRate = Number(node('playbackRate').value) || 1;});
   qualitySelect.addEventListener('change', () => {
     quality = Number(qualitySelect.value) || 0;

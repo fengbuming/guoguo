@@ -275,6 +275,7 @@
                 <button id="mobileLandscapeRateBtn" class="quiet landscape-only" aria-label="调整播放倍速">倍速</button>
                 <button id="mobileLandscapeQualityBtn" class="quiet landscape-only" aria-label="调整清晰度">自动</button>
                 <button id="mobileEpisodesBtn" class="mobile-episode-rail" aria-label="打开选集"><span>选集 <small id="mobileEpisodeSummary">获取分集中</small></span><span class="mobile-episode-chevron"><span data-icon="chevron"></span></span></button>
+                <button id="reloadPlaybackVideoBtn" class="quiet icon-button" aria-label="重新加载当前集" title="重新加载当前集"><span data-icon="refresh"></span></button>
                 <button id="mobileVideoFullscreenBtn" class="quiet icon-button" aria-label="全屏播放" title="全屏播放" hidden><span data-icon="fullscreen"></span></button>
               </div>
             </div>
@@ -283,7 +284,7 @@
             <div id="playbackDanmaku" class="playback-danmaku" aria-hidden="true"></div>
             <button id="exitPlayerFullscreenBtn" class="secondary stage-fullscreen-exit" aria-label="退出播放器全屏">退出全屏</button>
           </div>
-          <div class="player-toolbar"><button id="toggleEpisodesBtn" class="secondary" aria-expanded="false" aria-controls="playerEpisodesPanel">选集</button><button id="previousEpisodeBtn" class="secondary icon-button" aria-label="上一集" title="上一集" disabled><span data-icon="previous"></span></button><button id="nextEpisodeBtn" class="button-content" disabled>下一集<span data-icon="next"></span></button><label id="playbackQualityControl" hidden>画质<select id="playbackQuality" aria-label="播放清晰度"><option value="0">自动</option></select></label><label>倍速<select id="playbackRate" aria-label="播放倍速"><option value="0.75">0.75 倍</option><option value="1" selected>1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="2">2 倍</option><option value="3">3 倍</option></select></label><button id="playerFullscreenBtn" class="secondary icon-button" aria-label="全屏" title="全屏" hidden><span data-icon="fullscreen"></span></button><button id="playerPreferencesBtn" class="secondary icon-button" aria-label="播放设置" aria-expanded="false" aria-controls="playerPreferences"><span data-icon="settings"></span></button></div>
+          <div class="player-toolbar"><button id="toggleEpisodesBtn" class="secondary" aria-expanded="false" aria-controls="playerEpisodesPanel">选集</button><button id="previousEpisodeBtn" class="secondary icon-button" aria-label="上一集" title="上一集" disabled><span data-icon="previous"></span></button><button id="nextEpisodeBtn" class="button-content" disabled>下一集<span data-icon="next"></span></button><label id="playbackQualityControl" hidden>画质<select id="playbackQuality" aria-label="播放清晰度"><option value="0">自动</option></select></label><label>倍速<select id="playbackRate" aria-label="播放倍速"><option value="0.75">0.75 倍</option><option value="1" selected>1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="2">2 倍</option><option value="3">3 倍</option></select></label><button id="reloadPlaybackBtn" class="secondary icon-button" aria-label="重新加载当前集" title="重新加载当前集"><span data-icon="refresh"></span></button><button id="playerFullscreenBtn" class="secondary icon-button" aria-label="全屏" title="全屏" hidden><span data-icon="fullscreen"></span></button><button id="playerPreferencesBtn" class="secondary icon-button" aria-label="播放设置" aria-expanded="false" aria-controls="playerPreferences"><span data-icon="settings"></span></button></div>
           <div class="playback-feedback"><span id="playbackStatus" class="small" role="status" aria-live="polite"></span><span id="playbackBufferStatus" class="small" hidden></span><span id="prefetchStatus" class="small" role="status" aria-live="polite" hidden></span></div>
           <div id="playbackHistoryStatus" class="small" role="status" aria-live="polite"></div><div class="playback-error-row"><div id="playbackError" class="error" role="alert"></div><button id="retryPlaybackBtn" class="secondary" disabled hidden>重试播放</button></div>
           <div id="playerPreferences" class="player-preferences" hidden>
@@ -306,7 +307,7 @@
 <script src="/assets/player-fullscreen.js"></script>
 <script src="/assets/player-danmaku.js"></script>
 <script src="/assets/history.js"></script>
-<script src="/assets/player-buffer.js"></script>
+<script src="/assets/player-buffer.js?v=20261018-failover"></script>
 <script src="/assets/player-orientation.js"></script>
 <script src="/assets/player-mobile.js"></script>
 <script src="/assets/player-controls.js"></script>
@@ -314,7 +315,7 @@
 <script src="/assets/player-media.js"></script>
 <script src="/assets/player-capabilities.js"></script>
 <script src="/assets/player-session.js"></script>
-<script src="/assets/player.js?v=20261017-stall"></script>
+<script src="/assets/player.js?v=20261018-failover"></script>
 <script src="/assets/library-sort.js"></script>
 <script src="/assets/vip-filter.js"></script>
 <script src="/assets/rankings.js"></script>

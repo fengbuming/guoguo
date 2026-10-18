@@ -475,3 +475,51 @@ func TestRetryableMediaStatusCoversTransientRejections(t *testing.T) {
 		}
 	}
 }
+
+// 当前 CDN 节点持续异常时，续读应换到备用节点而不是死磕；
+// 换节点时校验器已重置，因此备用节点即使 ETag 不同也能续读成功。
+func TestMediaProxyFailsOverToAlternateHost(t *testing.T) {
+	payload := bytes.Repeat([]byte("0123456789"), 10)
+	var primaryCalls, backupCalls atomic.Int32
+	backup := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		backupCalls.Add(1)
+		writer.Header().Set("Content-Range", "bytes 10-99/100")
+		writer.Header().Set("ETag", `"alt-v2"`)
+		writer.Header().Set("Content-Length", "90")
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(payload[10:])
+	}))
+	t.Cleanup(backup.Close)
+	proxy, client := mediaProxyFixture(t, func(writer http.ResponseWriter, request *http.Request) {
+		primaryCalls.Add(1)
+		if request.Header.Get("Range") == "" {
+			writer.Header().Set("Content-Length", "100")
+			writer.Header().Set("ETag", `"primary-v1"`)
+			_, _ = writer.Write(payload[:10])
+			return
+		}
+		writer.WriteHeader(http.StatusForbidden)
+	})
+	for key, asset := range proxy.assets {
+		asset.fallbacks = []hlsAsset{{remote: backup.URL + "/fixture.mp4"}}
+		proxy.assets[key] = asset
+	}
+	response, err := client.Get(proxy.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("换节点后应续读成功: %v", err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("续读内容不完整: %d/%d 字节", len(body), len(payload))
+	}
+	if backupCalls.Load() != 1 {
+		t.Fatalf("备用节点应只被请求一次，实际 %d", backupCalls.Load())
+	}
+	if primaryCalls.Load() > 3 {
+		t.Fatalf("主节点最多 1 次初始 + %d 次续读，实际 %d", mediaResumeAttemptsPerHost, primaryCalls.Load())
+	}
+}

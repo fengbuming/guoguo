@@ -133,7 +133,8 @@ func (app *UIApp) attachMediaGateway(media *playbackMediaSession, base, query st
 		if query != "" {
 			proxy.root += "?" + query
 		}
-		proxy.assets = map[string]hlsAsset{base + "file.mp4": {remote: media.media.URL}}
+		// 用 playbackRootAsset 让 mp4 直链也携带同一清晰度的备用 CDN 节点，供续读换节点。
+		proxy.assets = map[string]hlsAsset{base + "file.mp4": playbackRootAsset(media.media)}
 		proxy.assetIDs = map[string]string{media.media.URL: proxy.root}
 	}
 	media.proxy = proxy

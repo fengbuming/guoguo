@@ -311,11 +311,11 @@ func selectHongguoModelMedia(list map[string]any, seed []byte) (providerMedia, e
 		if rank >= 2 {
 			continue
 		}
-		address := hongguoModelMediaAddress(row, seed)
+		address, backups := hongguoModelMediaAddresses(row, seed)
 		if address == "" {
 			continue
 		}
-		media := providerMedia{URL: address, Referer: "https://novel.snssdk.com/"}
+		media := providerMedia{URL: address, Backups: backups, Referer: "https://novel.snssdk.com/"}
 		if duration, err := strconv.ParseFloat(firstNonEmpty(
 			mapString(row, "duration"), mapString(nestedMap(row, "video_meta"), "duration")), 64); err == nil && duration > 0 {
 			media.Duration = time.Duration(duration * float64(time.Second))
@@ -399,19 +399,40 @@ func hongguoModelDimensions(row map[string]any) (int, int) {
 
 // hongguoModelMediaAddress 依次尝试各地址字段，命中 key_seed 时解密。
 func hongguoModelMediaAddress(row map[string]any, seed []byte) string {
+	main, _ := hongguoModelMediaAddresses(row, seed)
+	return main
+}
+
+// hongguoModelMediaAddresses 收集该清晰度的全部地址：首个为主地址，其余为备用节点。
+// 同一清晰度的 main_url 与 backup_url_* 指向同一份视频的不同 CDN 节点。
+func hongguoModelMediaAddresses(row map[string]any, seed []byte) (string, []string) {
+	var main string
+	var backups []string
+	seen := map[string]bool{}
 	for _, field := range []string{"main_url", "backup_url_1", "backup_url_2", "backup_url"} {
 		value := strings.TrimSpace(mapString(row, field))
 		if value == "" {
 			continue
 		}
-		if isProviderHTTPMediaURL(value) {
-			return value
-		}
-		if len(seed) > 0 {
-			if address, err := hongguoDecryptSpadeURL(value, seed); err == nil {
-				return address
+		if !isProviderHTTPMediaURL(value) {
+			if len(seed) == 0 {
+				continue
 			}
+			decrypted, err := hongguoDecryptSpadeURL(value, seed)
+			if err != nil {
+				continue
+			}
+			value = decrypted
+		}
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		if main == "" {
+			main = value
+		} else {
+			backups = append(backups, value)
 		}
 	}
-	return ""
+	return main, backups
 }

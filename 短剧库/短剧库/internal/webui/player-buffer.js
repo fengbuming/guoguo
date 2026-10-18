@@ -38,8 +38,10 @@
   function prefetchReady({duration, position, rate = 1, ahead, complete, metadataOnly}) {
     const remaining = duration - position;
     rate = Math.max(0.25, Number(rate) || 1);
-    if (!Number.isFinite(remaining) || remaining <= 0 || remaining / rate > (metadataOnly ? 60 : 45)) return false;
-    return metadataOnly ? ahead >= Math.min(remaining, 15 * rate) - 0.25 : complete && ahead >= remaining - 0.25;
+    // 剩余 90 秒内即可开始预取（原为 60），短剧单集短，太晚开始缓存不完
+    if (!Number.isFinite(remaining) || remaining <= 0 || remaining / rate > (metadataOnly ? 90 : 45)) return false;
+    // 已缓冲 8 秒（原为 15）即可预取，更早备好下一集
+    return metadataOnly ? ahead >= Math.min(remaining, 8 * rate) - 0.25 : complete && ahead >= remaining - 0.25;
   }
 
   function pause(signal) {
@@ -88,6 +90,8 @@
           return;
         } catch (error) {
           if (error.name !== 'QuotaExceededError') throw error;
+
+
           ceiling = Math.max(4, Math.min(ceiling / 2, snapshot(video).ahead * 0.75 || ceiling / 2));
           budget = Math.max(4 * 1024 * 1024, budget / 2);
           keepBehind = Math.min(keepBehind, 10);

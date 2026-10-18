@@ -106,6 +106,12 @@ func playbackRootAsset(media providerMedia) hlsAsset {
 		// 红果 DASH 视频直链无扩展名，按 mp4 提供以保证 Content-Type 正确。
 		asset.extension = ".mp4"
 	}
+	// 同一清晰度的备用 CDN 节点排最前：换节点优先于降清晰度。
+	for _, backup := range media.Backups {
+		if isProviderHTTPMediaURL(backup) {
+			asset.fallbacks = append(asset.fallbacks, hlsAsset{remote: backup})
+		}
+	}
 	for _, fallback := range mediaFallbackVariants(media) {
 		asset.fallbacks = append(asset.fallbacks, hlsAsset{remote: fallback.URL, body: []byte(fallback.Playlist), playlist: fallback.Playlist != ""})
 	}
@@ -113,6 +119,20 @@ func playbackRootAsset(media providerMedia) hlsAsset {
 		asset.body = nil
 	}
 	return asset
+}
+
+// mediaResumeAlternates 提取可用于续读换节点的备用地址（去重、排除当前地址与播放列表）。
+func mediaResumeAlternates(asset hlsAsset) []string {
+	var urls []string
+	seen := map[string]bool{asset.remote: true}
+	for _, fallback := range asset.fallbacks {
+		if fallback.playlist || !isProviderHTTPMediaURL(fallback.remote) || seen[fallback.remote] {
+			continue
+		}
+		seen[fallback.remote] = true
+		urls = append(urls, fallback.remote)
+	}
+	return urls
 }
 
 func (proxy *hlsProxy) Close() {
@@ -380,6 +400,7 @@ func (proxy *hlsProxy) ServeHTTP(writer http.ResponseWriter, request *http.Reque
 			}
 		} else {
 			reader := proxy.mediaReader(upstream, response)
+			reader.alternates = mediaResumeAlternates(asset)
 			defer reader.Close()
 			for _, header := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Encoding", "ETag", "Last-Modified"} {
 				if value := response.Header.Get(header); value != "" {

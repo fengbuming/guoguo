@@ -61,6 +61,11 @@
 - 根因：`media_resume.go` 的 `resume()` 对 `status < 500` 直接放弃重试，403 只试 1 次即判死。而实测 CDN 的 403 是**按节点的偶发防盗链拒绝**（同一 URL 直连 206；带 `Referer: hongguoduanju.com` 时 `v96-reading-videocdn.qznovelvod.com` 返回 403），并发 8 次/串行 6 次 Range 均正常，非限流也非 URL 过期。
 - 修复：新增 `retryableMediaStatus()` **白名单**（403/404/410/408/429/5xx 重试，200 与 400/401/416 不重试）；退避 250ms → 600ms。注意必须用白名单，用「排除法」会把 200 纳入重试从而破坏 `TestMediaProxyRejectsUnsafeContinuation`。
 
+### 续读换 CDN 节点（2026-10-18，根治卡顿核心）
+
+- 实测红果 CDN 单连接平均只稳定传 2–5MB 就被服务端关闭，且续读易粘在同一坏节点（实测单节点续读耗时中位 27s、最坏 173s）。根治：单节点连续失败 2 次（`mediaResumeAttemptsPerHost`）即切同清晰度备用节点（`providerMedia.Backups`，来自 `backup_url_1/2`），**换节点必须重置 ETag validator**（各节点 ETag 不同，不重置误报「资源已变化」）。备用节点优先于降清晰度。
+- 前端兜底：`recoverFromStall` 用 `starved`（readyState<3 或 buffered<1s）判据，暂停→播放一次生效；播放页有刷新按钮（`reloadPlaybackBtn`/`reloadPlaybackVideoBtn` → `reloadPlayback()` 重建会话）。改前端必须升 `player.js`/`player-buffer.js` 的 `?v=` 版本号（裸引用会被浏览器缓存）。
+
 ### 播放静默挂起（2026-10-17 修复）
 
 - 症状：手机局域网播放「看几集就卡住当前集、无任何提示」，返回重进恢复；日志里卡住时段**无任何 media 事件**。
@@ -130,4 +135,6 @@
 
 - 两个仓库**无 git**（只有 `.gitignore`），改动无法用 git 回滚；改前先备份文件。`_backup_full_20260925/`、`_backup_pro_20260925/` 是 09-25 换源码时的整目录备份。
 - 两仓库同源但不完全相同：专用版删掉了多源逻辑与 legacy 取流路径（`provider_media.go`、`playback_stream.go` 有差异，其余 provider 文件一致）。同步改动时**相同文件可直接 `cp`**，有差异的文件要定点改。
+- **禁止跨版 cp 清单**（有专属差异，cp 会互相覆盖，2026-10-18 踩坑）：`internal/webui/index.html`（标题/品牌/vip-filter/端口文案）、`internal/app/provider_media.go`。改这两类文件必须两版各自定点改。
+- **planOnly 语义不可动**：MSE/原始直连模式预取 = 只解析地址（`TestPlaybackPlanRefusalAndMetadataOnlyPrefetch` 钉死：resolved、0 字节传输）；native（手机）真缓存由 native 分支承担。勿改全模式真缓存。
 - 完全版下载红果走 `provider_huangguo.go:downloadHuangguoProviderMediaWithProgress`；专用版走 `download_media.go:downloadMediaWithProgress`。

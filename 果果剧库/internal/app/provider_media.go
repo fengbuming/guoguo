@@ -18,9 +18,13 @@ type providerMedia struct {
 	HLSKey       []byte
 	CENCKey      []byte
 	AudioCENCKey []byte
-	Quality      int
-	Variants     []providerMedia
-	audioInput   string
+	Quality int
+	// Variants 是不同清晰度的候选（用于降级与画质选择）。
+	Variants []providerMedia
+	// Backups 是同一清晰度的备用 CDN 节点地址：续读时优先换节点而不是降清晰度。
+	// 实测坏节点会持续几十秒不响应（续读最坏观测到 173 秒才恢复），换节点远快于死磕。
+	Backups    []string
+	audioInput string
 }
 
 func (d *Downloader) providerBaseURL(source string) string {
