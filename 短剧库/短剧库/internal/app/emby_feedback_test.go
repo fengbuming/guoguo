@@ -75,7 +75,7 @@ func TestEmbyMergedArchiveSignedRangesAndPermissions(t *testing.T) {
 	member := newAccountTestBrowser(t, app)
 	member.register(t, "merged-viewer")
 	owner := app.browserViewers().accountStore().state.Accounts["merged-viewer"].ID
-	drama := app.dramas[0]
+	drama := app.libraryDramas()[0]
 	body := bytes.Repeat([]byte("synthetic-merged-media"), 30)
 	path := filepath.Join(t.TempDir(), "merged.mp4")
 	if err := os.WriteFile(path, body, 0600); err != nil {
@@ -196,7 +196,8 @@ func TestEmbyMergeCompletionWakesSyncAndMergedOnlyLibrary(t *testing.T) {
 	broken := app.downloader.hongguoClient().details["7000000000000000001"]
 	broken.Chapters = nil
 	app.downloader.hongguoClient().details["7000000000000000001"] = broken
-	app.tasks, app.taskOrder, app.dramas = nil, nil, nil
+	app.tasks, app.taskOrder = nil, nil
+	app.setLibraryDramas(nil)
 	manager.document.Settings.Following, manager.document.Settings.Downloads = false, true
 	manager.document.Settings.OutputDir = t.TempDir()
 	manager.document.Entries = map[string]embySyncEntry{}
@@ -213,7 +214,7 @@ func TestEmbyMergeCompletionWakesSyncAndMergedOnlyLibrary(t *testing.T) {
 
 func TestEmbyMergedExportSurvivesUnavailableSource(t *testing.T) {
 	app, admin := administratorFixture(t)
-	drama := app.dramas[0]
+	drama := app.libraryDramas()[0]
 	path := filepath.Join(t.TempDir(), "merged.mp4")
 	if err := os.WriteFile(path, []byte("completed local merge"), 0600); err != nil {
 		t.Fatal(err)
@@ -260,7 +261,7 @@ func TestEmbyMergedExportSurvivesUnavailableSource(t *testing.T) {
 
 func TestEmbyLocalPosterIsStableAndPreservesCustomArtwork(t *testing.T) {
 	app := viewerTestApp(t)
-	drama := app.dramas[0]
+	drama := app.libraryDramas()[0]
 	drama.CoverURL = embyFixtureCover
 	settings := embySyncSettings{GroupBySource: true, OutputDir: t.TempDir(), BaseURL: "http://library.test"}
 	ctx := context.Background()
@@ -320,7 +321,7 @@ func TestEmbyLocalPosterIsStableAndPreservesCustomArtwork(t *testing.T) {
 func TestEmbyLocalPosterFailureRetriesWithoutLosingSTRM(t *testing.T) {
 	app := viewerTestApp(t)
 	manager := app.embySyncer()
-	drama := app.dramas[0]
+	drama := app.libraryDramas()[0]
 	drama.CoverURL = embyFixtureCover
 	settings := embySyncSettings{OutputDir: t.TempDir(), BaseURL: "http://library.test", IntervalMinutes: 60}
 	folder, _, _, err := syncEmbyDramaFiles(context.Background(), settings, drama, embySyncTestChapters(), "", make([]byte, 32), "owner")

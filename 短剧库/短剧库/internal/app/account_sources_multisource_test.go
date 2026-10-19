@@ -18,7 +18,7 @@ func TestSourcePermissionsFilterReadsAndRejectMixedActions(t *testing.T) {
 	member.watch(t, app, 1, 9)
 	hidden := "huangdou:hidden-series"
 	app.mu.Lock()
-	app.dramas = append(app.dramas, Drama{ID: hidden, Source: sourceHuangdou, Title: "restricted secret title", CoverURL: "https://tideember.cc/hidden-cover.jpg"}, Drama{ID: "cloudfront-legacy", Title: "legacy secret"}, Drama{ID: "hongguo:7999999999999999999", Source: sourceHuangdou, Title: "conflicting secret"})
+	app.setLibraryDramas(append(app.libraryDramas(), Drama{ID: hidden, Source: sourceHuangdou, Title: "restricted secret title", CoverURL: "https://tideember.cc/hidden-cover.jpg"}, Drama{ID: "cloudfront-legacy", Title: "legacy secret"}, Drama{ID: "hongguo:7999999999999999999", Source: sourceHuangdou, Title: "conflicting secret"}))
 	app.libraryAttempted = true
 	app.libraryRevision = 7
 	app.librarySources = map[string]librarySourceState{sourceHongguo: {Count: 1, Status: "ready"}, sourceHuangdou: {Count: 1, Status: "failed", Error: "restricted secret error"}}

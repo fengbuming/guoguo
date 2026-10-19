@@ -35,7 +35,7 @@ type UIApp struct {
 	downloader             *Downloader
 	cfg                    Config
 	mu                     sync.Mutex
-	dramas                 []Drama
+	library                *libraryStore
 	selected               map[string]bool
 	tasks                  map[string]*UITask
 	taskOrder              []string
@@ -537,8 +537,8 @@ func (a *UIApp) loadState() {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.dramas = append([]Drama(nil), state.Dramas...)
-	a.normalizeDramaCovers(a.dramas)
+	a.normalizeDramaCovers(state.Dramas)
+	a.setLibraryDramas(state.Dramas)
 	a.loadedAt = state.LoadedAt
 	a.lastError = a.redactString(state.LastError)
 	a.dramaDirectories = state.DramaDirectories
@@ -678,7 +678,7 @@ func (a *UIApp) saveStateLocked() error {
 		DramaDirectories: a.dramaDirectories,
 	}
 	if !a.librarySaved {
-		state.Dramas = append([]Drama(nil), a.dramas...)
+		state.Dramas = a.libraryDramas()
 	}
 	for _, id := range a.taskOrder {
 		if task := a.tasks[id]; task != nil {
@@ -776,7 +776,7 @@ func (a *UIApp) handleDramas(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	updateAccepted := update && a.libraryLoading == nil
-	if a.libraryLoading == nil && (update || refresh || more || len(a.dramas) == 0 && !a.libraryAttempted) {
+	if a.libraryLoading == nil && (update || refresh || more || a.libraryLen() == 0 && !a.libraryAttempted) {
 		mode := libraryLoadRefresh
 		if update {
 			mode = libraryLoadUpdate
@@ -1114,16 +1114,10 @@ func (a *UIApp) enqueueDramasAsync(ids []string, updateOnly bool, requestedQuali
 	if a.parsingInFlight == nil {
 		a.parsingInFlight = map[string]bool{}
 	}
-	dramaByID := make(map[string]Drama, len(a.dramas))
-	for _, dr := range a.dramas {
-		if strings.TrimSpace(dr.ID) != "" {
-			dramaByID[dr.ID] = dr
-		}
-	}
 	views := make([]uiTaskView, 0, len(ids))
 	dramas := make([]Drama, 0, len(ids))
 	for _, id := range ids {
-		drama, found := dramaByID[id]
+		drama, found := a.libraryDrama(id)
 		if !found {
 			drama = Drama{ID: id, Title: "短剧"}
 		}
@@ -1980,9 +1974,17 @@ func (a *UIApp) pathIndexLocked() map[string]*UITask {
 
 func (a *UIApp) taskViewsLocked() []uiTaskView {
 	views := make([]uiTaskView, 0, len(a.taskOrder))
-	releases := make(map[string]string, len(a.dramas))
-	for _, drama := range a.dramas {
-		releases[drama.ID] = dramaReleaseStatus(drama)
+	releases := make(map[string]string, len(a.taskOrder))
+	for _, id := range a.taskOrder {
+		task := a.tasks[id]
+		if task == nil {
+			continue
+		}
+		if _, exists := releases[task.DramaID]; !exists {
+			if drama, found := a.libraryDrama(task.DramaID); found {
+				releases[task.DramaID] = dramaReleaseStatus(drama)
+			}
+		}
 	}
 	for _, id := range a.taskOrder {
 		if task := a.tasks[id]; task != nil {

@@ -218,10 +218,9 @@ func (app *UIApp) handlePlaybackOpen(writer http.ResponseWriter, request *http.R
 		}
 		title, tasks, downloadIDs, initialIndex, collectionErr = app.collectionPlaybackTasksLocked(input.TaskID)
 	} else {
-		for _, candidate := range app.dramas {
-			if candidate.ID == input.DramaID && input.DramaID != "" {
+		if input.DramaID != "" {
+			if candidate, found := app.libraryDrama(input.DramaID); found {
 				drama = candidate
-				break
 			}
 		}
 	}

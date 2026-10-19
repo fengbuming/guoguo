@@ -23,8 +23,13 @@ func libraryCachePath(outputDir string) string {
 	return filepath.Join(outputDir, "library.json")
 }
 
+// readLibraryCache 优先读取分片剧库（UI 现在的落盘位置），没有时才回落到旧版整文件缓存，
+// 保证 CLI、同步包与既有调用方看到的都是最新数据。
 func readLibraryCache(outputDir string) (libraryCache, error) {
 	var cache libraryCache
+	if cache, err := readLibraryStoreCache(outputDir); err == nil {
+		return cache, nil
+	}
 	path := libraryCachePath(outputDir)
 	body, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -38,6 +43,42 @@ func readLibraryCache(outputDir string) (libraryCache, error) {
 		return cache, fmt.Errorf("本地剧库缓存损坏 %s: %w", path, err)
 	}
 	return cache, nil
+}
+
+// readLibraryStoreCache 从分片剧库重建旧版缓存结构；剧库为空时返回错误以便回落到旧文件。
+func readLibraryStoreCache(outputDir string) (libraryCache, error) {
+	store, err := openLibraryStore(outputDir)
+	if err != nil {
+		return libraryCache{}, err
+	}
+	if store.Len() == 0 {
+		return libraryCache{}, os.ErrNotExist
+	}
+	return libraryCache{
+		Dramas:          store.All(),
+		LoadedAt:        store.meta.LoadedAt,
+		LastError:       store.meta.LastError,
+		Sources:         store.meta.Sources,
+		HongguoApp:      store.meta.Hongguo,
+		ProviderCatalog: store.meta.Catalog,
+	}, nil
+}
+
+// writeLibraryStoreCache 把整份剧库写入分片存储，供 CLI 刷新后同步给 UI 使用。
+func writeLibraryStoreCache(outputDir string, cache libraryCache) error {
+	if len(cache.Dramas) == 0 {
+		return nil
+	}
+	store := &libraryStore{dir: outputDir, byID: map[string]int{}, shards: map[uint16]*libraryShard{}, dirty: map[uint16]bool{}}
+	store.importDramas(cache.Dramas)
+	meta := &libraryIndexFile{
+		LoadedAt:  cache.LoadedAt,
+		LastError: cache.LastError,
+		Sources:   cache.Sources,
+		Hongguo:   cache.HongguoApp,
+		Catalog:   cache.ProviderCatalog,
+	}
+	return store.Persist(outputDir, meta)
 }
 
 func writeLibraryCache(outputDir string, cache libraryCache) error {
@@ -65,29 +106,46 @@ func writeLibraryCache(outputDir string, cache libraryCache) error {
 }
 
 func (a *UIApp) loadLibrary() {
-	cache, err := readLibraryCache(a.cfg.dataDirectory())
-	if err == nil {
-		a.downloader.restoreHongguoCatalog(cache.HongguoApp)
-		a.downloader.restoreProviderCatalog(cache.ProviderCatalog)
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			a.libraryError = a.redactError(err)
+	store, storeErr := openLibraryStore(a.cfg.dataDirectory())
+	if storeErr != nil {
+		if !errors.Is(storeErr, os.ErrNotExist) {
+			a.libraryError = a.redactError(storeErr)
 		}
 		return
 	}
-	if len(cache.Dramas) > 0 && (len(a.dramas) == 0 || !a.loadedAt.After(cache.LoadedAt)) {
-		a.dramas = cache.Dramas
-		a.normalizeDramaCovers(a.dramas)
-		a.loadedAt = cache.LoadedAt
-		a.libraryError = cache.LastError
+	a.library = store
+	// 只有在磁盘剧库为空时才读取旧版整文件缓存，避免每次启动都解析几十 MB 的 JSON
+	var cache libraryCache
+	legacy := false
+	if store.Len() == 0 {
+		legacyCache, err := readLibraryCache(a.cfg.dataDirectory())
+		legacy = err == nil && len(legacyCache.Dramas) > 0
+		if legacy {
+			cache = legacyCache
+			a.downloader.restoreHongguoCatalog(cache.HongguoApp)
+			a.downloader.restoreProviderCatalog(cache.ProviderCatalog)
+			a.normalizeDramaCovers(cache.Dramas)
+			a.setLibraryDramas(cache.Dramas)
+			a.loadedAt = cache.LoadedAt
+			a.libraryError = cache.LastError
+		}
 	}
-	a.librarySources = cache.Sources
-	a.libraryProviders = a.downloader.providerCatalogSnapshot()
-	if cache.HongguoApp != nil {
-		a.libraryApp = a.downloader.hongguoCatalogSnapshot()
+	if store.hasMeta {
+		a.loadedAt = store.meta.LoadedAt
+		a.libraryError = store.meta.LastError
+		a.librarySources = store.meta.Sources
+		a.libraryProviders = store.meta.Catalog
+		if store.meta.Hongguo != nil {
+			a.libraryApp = store.meta.Hongguo
+		}
+	} else if legacy {
+		a.librarySources = cache.Sources
+		a.libraryProviders = a.downloader.providerCatalogSnapshot()
+		if cache.HongguoApp != nil {
+			a.libraryApp = a.downloader.hongguoCatalogSnapshot()
+		}
 	}
 	for source, state := range a.librarySources {
 		if state.Status == "loading" {
@@ -100,22 +158,24 @@ func (a *UIApp) loadLibrary() {
 		a.libraryError = sourceErrors
 	}
 	a.libraryRevision = 1
-	if len(a.dramas) > 0 {
-		if _, err := os.Stat(libraryCachePath(a.cfg.dataDirectory())); errors.Is(err, os.ErrNotExist) {
-			if err := writeLibraryCache(a.cfg.dataDirectory(), libraryCache{Dramas: a.dramas, LoadedAt: a.loadedAt, LastError: a.libraryError, Sources: a.librarySources, HongguoApp: a.libraryApp, ProviderCatalog: a.libraryProviders}); err != nil {
+	if a.libraryLen() > 0 {
+		if !store.hasMeta {
+			if err := a.persistLibraryLocked(); err != nil {
 				a.libraryError = "剧库缓存保存失败: " + a.redactError(err)
 				return
 			}
 		}
 		a.librarySaved = true
 		var pending []Drama
-		for _, drama := range a.dramas {
-			if drama.SortMetadata != nil && drama.SortMetadata.Pending {
-				pending = append(pending, drama)
+		for _, entry := range a.libraryEntries() {
+			if entry.SortMetadata != nil && entry.SortMetadata.Pending {
+				if drama, found := a.libraryDrama(entry.ID); found {
+					pending = append(pending, drama)
+				}
 			}
 		}
 		a.enqueueSortMetadataLocked(pending, false)
-		fmt.Printf("已恢复本地剧库：%d 部，缓存：%s\n", len(a.dramas), libraryCachePath(a.cfg.dataDirectory()))
+		fmt.Printf("已恢复本地剧库：%d 部，索引：%s\n", a.libraryLen(), libraryIndexPath(a.cfg.dataDirectory()))
 	}
 }
 
@@ -157,6 +217,12 @@ func (d *Downloader) RefreshDramas(ctx context.Context, source string) ([]Drama,
 	}
 	if err := writeLibraryCache(d.cfg.dataDirectory(), cache); err != nil {
 		loadErr = errors.Join(loadErr, fmt.Errorf("剧库缓存保存失败: %w", err))
+	}
+	// 已存在分片剧库时同步写入，避免 CLI 刷新结果对 Web 界面不可见
+	if _, err := os.Stat(libraryIndexPath(d.cfg.dataDirectory())); err == nil {
+		if err := writeLibraryStoreCache(d.cfg.dataDirectory(), cache); err != nil {
+			loadErr = errors.Join(loadErr, fmt.Errorf("分片剧库保存失败: %w", err))
+		}
 	}
 	fmt.Printf("本地剧库：%d 部，本次新增 %d 部\n", len(merged), len(merged)-len(cached.Dramas))
 	return merged, loadErr

@@ -80,7 +80,7 @@ func TestLibrarySearchStreamSharesAndPublishesBeforeCompletion(t *testing.T) {
 		t.Fatal("initial page was not delivered before supplement", frame.Done, len(frame.Data))
 	}
 	a.mu.Lock()
-	registered := len(a.dramas)
+	registered := a.libraryLen()
 	a.mu.Unlock()
 	if registered != 23 {
 		t.Fatal("visible search results were not registered for details/playback", registered)

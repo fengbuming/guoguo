@@ -38,7 +38,7 @@ func viewerTestApp(t *testing.T) *UIApp {
 		chapters = append(chapters, Chapter{ID: fmt.Sprintf("hongguo:7000000000000000001:%d", index), CurrentEpisode: rawEpisode(index), VideoURL: "hongguo-cenc://9000000000000000001"})
 	}
 	d.hongguoClient().details["7000000000000000001"] = hongguoDetailEntry{Drama: drama, Chapters: chapters, ExpiresAt: time.Now().Add(time.Hour)}
-	app := &UIApp{cfg: d.cfg, downloader: d, dramas: []Drama{drama}}
+	app := &UIApp{cfg: d.cfg, downloader: d, library: newLibraryStoreWith([]Drama{drama})}
 	t.Cleanup(app.closePlaybacks)
 	return app
 }

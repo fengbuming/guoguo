@@ -75,8 +75,8 @@ func TestAccountBrowserFixture(t *testing.T) {
 		for index := 1; index <= 65; index++ {
 			entry.Chapters = append(entry.Chapters, Chapter{ID: providerChapterID(sourceHongguo, "7000000000000000001", strconv.Itoa(index)), Source: sourceHongguo, CurrentEpisode: rawEpisode(index)})
 		}
-		app.dramas[0].TotalEpisode = 65
-		app.dramas[0].ReleaseStatus = "finished"
+		app.mutateDramaAt(0, func(d *Drama) { d.TotalEpisode = 65 })
+		app.mutateDramaAt(0, func(d *Drama) { d.ReleaseStatus = "finished" })
 	}
 	for index := range entry.Chapters {
 		entry.Chapters[index].VideoURL = mediaServer.URL + "/synthetic.mp4"

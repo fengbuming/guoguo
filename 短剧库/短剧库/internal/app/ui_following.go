@@ -56,9 +56,11 @@ func (app *UIApp) followingMetadata(ids []string) map[string]followingEntry {
 	}
 	selected := make([]Drama, 0, len(ids))
 	app.mu.Lock()
-	for _, drama := range app.dramas {
-		if wanted[drama.ID] {
-			selected = append(selected, drama)
+	for _, entry := range app.libraryEntries() {
+		if wanted[entry.ID] {
+			if drama, found := app.libraryDrama(entry.ID); found {
+				selected = append(selected, drama)
+			}
 		}
 	}
 	app.mu.Unlock()

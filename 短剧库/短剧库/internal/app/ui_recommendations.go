@@ -54,7 +54,7 @@ func (app *UIApp) mergeRecommendedDramas(items []Drama) []Drama {
 	app.mu.Lock()
 	app.normalizeDramaCovers(dramas)
 	newDramas := app.newSortMetadataDramasLocked(dramas)
-	app.dramas = mergeSourceDramas(app.dramas, dramas, nil, sourceHongguo)
+	app.libraryMerge(dramas)
 	app.enqueueSortMetadataLocked(newDramas, false)
 	app.loadedAt = time.Now()
 	if app.librarySources == nil {
@@ -62,12 +62,14 @@ func (app *UIApp) mergeRecommendedDramas(items []Drama) []Drama {
 	}
 	state := app.librarySources[sourceHongguo]
 	state.Count = 0
-	for _, drama := range app.dramas {
-		if dramaProvider(drama) == sourceHongguo {
+	for _, entry := range app.libraryEntries() {
+		if entryProvider(entry) == sourceHongguo {
 			state.Count++
 		}
-		if index, found := positions[drama.ID]; found {
-			dramas[index] = drama
+		if index, found := positions[entry.ID]; found {
+			if drama, ok := app.libraryDrama(entry.ID); ok {
+				dramas[index] = drama
+			}
 		}
 	}
 	state.UpdatedAt = app.loadedAt

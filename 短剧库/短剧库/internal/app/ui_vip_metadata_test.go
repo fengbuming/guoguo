@@ -60,7 +60,7 @@ func TestVIPToggleBackfillsBoundedBatchWithoutReadMigration(t *testing.T) {
 	app := &UIApp{downloader: d, cfg: d.cfg, libraryLoading: make(chan struct{})}
 	t.Cleanup(app.stopSortMetadata)
 	for i := 0; i < 45; i++ {
-		app.dramas = append(app.dramas, Drama{ID: fmt.Sprintf("huangdou:row-%d", i), Source: sourceHuangdou, Title: "历史样本", Heat: "100", Views: "0", OnlineDate: "2026-09-01", SortMetadata: &sortMetadataState{Version: 1, CheckedAt: time.Now().Add(-time.Hour)}})
+		app.setLibraryDramas(append(app.libraryDramas(), Drama{ID: fmt.Sprintf("huangdou:row-%d", i), Source: sourceHuangdou, Title: "历史样本", Heat: "100", Views: "0", OnlineDate: "2026-09-01", SortMetadata: &sortMetadataState{Version: 1, CheckedAt: time.Now().Add(-time.Hour)}}))
 	}
 	writer := httptest.NewRecorder()
 	app.handleDramas(writer, httptest.NewRequest(http.MethodGet, "/api/ui/dramas", nil))
@@ -107,7 +107,7 @@ func TestHuangdouClickUpdatesFullMetadataAndPlaybackReusesDetail(t *testing.T) {
 		return rankingHTTPResponse(request, 200, `{"data":{"id":"fixture","name":"新剧名","description":"新增简介","pay_type":"vip","episode_count":3,"free_episodes":1,"hot_rate":900,"issue_date":"2026-09-16","episodes":[{"seq":1,"type":"free"},{"seq":2,"type":"vip"},{"seq":3,"type":"vip"}]}}`), nil
 	})
 	old := Drama{ID: "huangdou:fixture", Source: sourceHuangdou, Title: "旧剧名", TotalEpisode: "1", Heat: "100", Views: "0", OnlineDate: "2026-09-01", CategoryName: "保留分类", CoverURL: coverAddressFixture, SortMetadata: &sortMetadataState{Version: 1, VIPChecked: true}}
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old})}
 	response := dramaRefreshRequest(app, old.ID)
 	var result dramaRefreshResult
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Warning != "" || result.Drama.VIP == nil || !*result.Drama.VIP || result.Drama.Intro != "新增简介" || fmt.Sprint(result.Drama.TotalEpisode) != "3" || result.Drama.CategoryName != "保留分类" || bestDramaCover(result.Drama) != coverAddressFixture {

@@ -31,12 +31,12 @@ func TestSearchCompletenessBrowserFixture(t *testing.T) {
 	seasons := hongguoManySeasonFixtures()
 	loader := routerLoaderMap(parseRouterData(page), "search_(keyword)/page")
 	for _, row := range anyList(loader["searchList"]) {
-		a.dramas = append(a.dramas, hongguoDramaFromAny(row, "短剧"))
+		a.setLibraryDramas(append(a.libraryDramas(), hongguoDramaFromAny(row, "短剧")))
 	}
 	for i := 0; i < 5000; i++ {
-		a.dramas = append(a.dramas, Drama{ID: fmt.Sprintf("hongguo:71000000000000%05d", i), Source: sourceHongguo, Title: fmt.Sprintf("缓存剧集 %04d", i), CategoryName: "短剧", Desc: "剧库搜索回归测试"})
+		a.setLibraryDramas(append(a.libraryDramas(), Drama{ID: fmt.Sprintf("hongguo:71000000000000%05d", i), Source: sourceHongguo, Title: fmt.Sprintf("缓存剧集 %04d", i), CategoryName: "短剧", Desc: "剧库搜索回归测试"}))
 	}
-	initial := append([]Drama{}, a.dramas...)
+	initial := append([]Drama{}, a.libraryDramas()...)
 	a.downloader.client = &http.Client{Transport: rankingTransport(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host != "hongguoduanju.com" {
 			return nil, fmt.Errorf("unexpected fixture host %s", r.URL.Host)
@@ -100,7 +100,7 @@ func TestSearchCompletenessBrowserFixture(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/__search_reset" && r.Method == http.MethodPost {
 			a.mu.Lock()
-			a.dramas = append([]Drama{}, initial...)
+			a.setLibraryDramas(append([]Drama{}, initial...))
 			a.libraryRevision++
 			a.mu.Unlock()
 			client := a.downloader.hongguoClient()

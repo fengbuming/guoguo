@@ -131,7 +131,7 @@ func TestEmbySyncAutomaticFollowedImportRefreshAndRestart(t *testing.T) {
 	ordinary := newAccountTestBrowser(t, app)
 	ordinary.register(t, "other-viewer")
 	otherID := "hongguo:7000000000000000002"
-	app.dramas = append(app.dramas, Drama{ID: otherID, Source: sourceHongguo, Title: "另一个用户的剧"})
+	app.setLibraryDramas(append(app.libraryDramas(), Drama{ID: otherID, Source: sourceHongguo, Title: "另一个用户的剧"}))
 	viewerResultOK(t, ordinary.request(t, http.MethodPost, "/api/ui/following", map[string]any{"dramaId": otherID, "saved": true}))
 	viewerResultOK(t, admin.request(t, http.MethodPost, "/api/ui/following", map[string]any{"dramaId": historyFixtureDramaID, "saved": true}))
 	var scans atomic.Int32
@@ -175,7 +175,7 @@ func TestEmbySyncAutomaticFollowedImportRefreshAndRestart(t *testing.T) {
 		t.Fatal("sync settings not saved privately")
 	}
 	manager.stop()
-	restarted := &UIApp{cfg: app.cfg, downloader: app.downloader, dramas: app.dramas}
+	restarted := &UIApp{cfg: app.cfg, downloader: app.downloader, library: app.library}
 	next := restarted.embySyncer()
 	if next.loadErr != nil || !next.document.Settings.Enabled || next.document.Settings.APIKey != "private-test-key" {
 		t.Fatal("restart lost configuration", next.loadErr)

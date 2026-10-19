@@ -42,11 +42,8 @@ func (a *UIApp) handleCoverRepair(w http.ResponseWriter, r *http.Request) {
 	input.DramaID = providerDramaID(source, id)
 	a.mu.Lock()
 	var drama Drama
-	for _, row := range a.dramas {
-		if row.ID == input.DramaID && dramaProvider(row) == source {
-			drama = row
-			break
-		}
+	if row, found := a.libraryDrama(input.DramaID); found && dramaProvider(row) == source {
+		drama = row
 	}
 	a.mu.Unlock()
 	if drama.ID == "" {
@@ -129,23 +126,22 @@ func (a *UIApp) repairDramaCover(ctx context.Context, drama Drama, observed stri
 	changed := false
 	if err == nil && strings.TrimSpace(address) != "" {
 		a.mu.Lock()
-		for index, current := range a.dramas {
-			if current.ID != drama.ID {
-				continue
+		a.libraryUpdate(drama.ID, func(current *Drama) bool {
+			if bestDramaCover(*current) != previous {
+				return false
 			}
-			if bestDramaCover(current) == previous {
-				patch := Drama{ID: current.ID, CoverURL: address}
-				normalizeDramaCover(&patch)
-				current.CoverURL, current.Cover = address, patch.Cover
-				changed = bestDramaCover(current) != previous
-				if changed {
-					a.dramas[index] = current
-					a.libraryDirty = true
-					a.libraryRevision++
-				}
+			patch := Drama{ID: current.ID, CoverURL: address}
+			normalizeDramaCover(&patch)
+			current.CoverURL, current.Cover = address, patch.Cover
+			changed = bestDramaCover(*current) != previous
+			if changed {
+				a.libraryDirty = true
+				a.libraryRevision++
 			}
+			return changed
+		})
+		if current, found := a.libraryDrama(drama.ID); found {
 			result = currentCoverResult(current)
-			break
 		}
 		a.mu.Unlock()
 	}

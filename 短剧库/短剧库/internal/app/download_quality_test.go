@@ -73,7 +73,7 @@ func downloadQualityApp(t *testing.T) *UIApp {
 	a := &UIApp{cfg: d.cfg, downloader: d, tasks: map[string]*UITask{}, statePath: filepath.Join(d.cfg.dataDirectory(), "ui-state.json")}
 	a.cond = sync.NewCond(&a.mu)
 	drama := Drama{ID: "hongguo:7000000000000000001", Source: sourceHongguo, SourceID: "7000000000000000001", Title: "无图画质任务"}
-	a.dramas = []Drama{drama}
+	a.setLibraryDramas([]Drama{drama})
 	client := d.hongguoClient()
 	client.details[drama.SourceID] = hongguoDetailEntry{Drama: drama, Chapters: []Chapter{
 		{ID: "hongguo:7000000000000000001:7000000000000000002", Source: sourceHongguo, Title: "第 1 集", CurrentEpisode: rawEpisode(1)},

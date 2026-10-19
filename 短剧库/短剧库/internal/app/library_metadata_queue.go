@@ -6,9 +6,9 @@ import (
 )
 
 func (a *UIApp) newSortMetadataDramasLocked(items []Drama) []Drama {
-	known := make(map[string]bool, len(a.dramas))
-	for _, drama := range a.dramas {
-		known[drama.ID] = true
+	known := make(map[string]bool, a.libraryLen())
+	for _, entry := range a.libraryEntries() {
+		known[entry.ID] = true
 	}
 	var fresh []Drama
 	for _, drama := range items {
@@ -24,7 +24,7 @@ func (a *UIApp) newSortMetadataDramasLocked(items []Drama) []Drama {
 
 func (a *UIApp) enqueueHistoricalMetadataLocked(source string, priority []string) {
 	var available []Drama
-	for _, drama := range a.dramas {
+	for _, drama := range a.libraryIndexDramas() {
 		if !a.metadataPending[drama.ID] {
 			available = append(available, drama)
 		}
@@ -51,17 +51,18 @@ func (a *UIApp) enqueueSortMetadataLocked(items []Drama, prioritize bool) {
 		return
 	}
 
-	for index, drama := range a.dramas {
-		if !a.metadataPending[drama.ID] || drama.SortMetadata != nil && drama.SortMetadata.Pending {
-			continue
+	a.libraryUpdateEntries(added, func(entry *dramaEntry) bool {
+		if !a.metadataPending[entry.ID] || entry.SortMetadata != nil && entry.SortMetadata.Pending {
+			return false
 		}
 		state := sortMetadataState{Pending: true}
-		if drama.SortMetadata != nil {
-			state = *drama.SortMetadata
+		if entry.SortMetadata != nil {
+			state = *entry.SortMetadata
 			state.Pending = true
 		}
-		a.dramas[index].SortMetadata = &state
-	}
+		entry.SortMetadata = &state
+		return true
+	})
 	if prioritize {
 		a.metadataQueue = append(added, a.metadataQueue...)
 	} else {
@@ -117,13 +118,7 @@ func (a *UIApp) runSortMetadataQueue(ctx context.Context, done chan struct{}) {
 		}
 		id := a.metadataQueue[0]
 		a.metadataQueue = a.metadataQueue[1:]
-		var previous Drama
-		for _, drama := range a.dramas {
-			if drama.ID == id {
-				previous = drama
-				break
-			}
-		}
+		previous, _ := a.libraryDrama(id)
 		a.mu.Unlock()
 		itemCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
 		patch, err := a.downloader.fetchDramaSortMetadata(itemCtx, previous)
@@ -148,21 +143,19 @@ func (a *UIApp) runSortMetadataQueue(ctx context.Context, done chan struct{}) {
 			continue
 		}
 		delete(a.metadataPending, id)
-		for index, drama := range a.dramas {
-			if drama.ID != id {
-				continue
-			}
+		a.libraryUpdate(id, func(drama *Drama) bool {
 			_, sourceID, _ := splitProviderDramaID(drama.ID)
-			if dramaProvider(drama) != sourceHuangguoAI || firstHuangguoTitle(sourceID, drama.Title, drama.Name) != "" {
+			if dramaProvider(*drama) != sourceHuangguoAI || firstHuangguoTitle(sourceID, drama.Title, drama.Name) != "" {
 				patch.Title, patch.Name = drama.Title, drama.Name
 			}
-			updated := mergeDramaMetadata(patch, drama)
-			if patch.VIP != nil && (drama.VIP == nil || *patch.VIP != *drama.VIP) || patch.OnlineDate != "" && patch.OnlineDate != drama.OnlineDate || patch.Heat != "" && patch.Heat != drama.Heat || patch.Views != "" && patch.Views != drama.Views || bestDramaCover(patch) != "" && bestDramaCover(patch) != bestDramaCover(drama) || huangguoContentChanged(drama, updated) {
+			previous := *drama
+			updated := mergeDramaMetadata(patch, previous)
+			if patch.VIP != nil && (previous.VIP == nil || *patch.VIP != *previous.VIP) || patch.OnlineDate != "" && patch.OnlineDate != previous.OnlineDate || patch.Heat != "" && patch.Heat != previous.Heat || patch.Views != "" && patch.Views != previous.Views || bestDramaCover(patch) != "" && bestDramaCover(patch) != bestDramaCover(previous) || huangguoContentChanged(previous, updated) {
 				a.libraryMetadata.Updated++
 			}
-			a.dramas[index] = updated
-			break
-		}
+			*drama = updated
+			return true
+		})
 		a.libraryMetadata.Checked++
 		if err != nil {
 			a.libraryMetadata.Failed++

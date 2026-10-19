@@ -37,7 +37,7 @@ func TestHongguoSuggestionsPreserveNamesWithoutFetchingDramaMetadata(t *testing.
 		}
 		return rankingHTTPResponse(r, 200, hongguoSuggestionFixture), nil
 	})
-	a := &UIApp{downloader: d, dramas: []Drama{{ID: "existing", Title: "现有剧库"}}}
+	a := &UIApp{downloader: d, library: newLibraryStoreWith([]Drama{{ID: "existing", Title: "现有剧库"}})}
 	w := httptest.NewRecorder()
 	a.handleLibrarySearchSuggestions(w, httptest.NewRequest(http.MethodGet, "/api/ui/search/suggestions?q="+url.QueryEscape(" 永&夜 "), nil))
 	var response struct {
@@ -51,7 +51,7 @@ func TestHongguoSuggestionsPreserveNamesWithoutFetchingDramaMetadata(t *testing.
 	if response.Query != "永&夜" || response.Source != sourceHongguo || len(response.Data) != 8 || response.Data[1].Name != "永夜苟神：十万住户供我发育" {
 		t.Fatal("missing names, including a suggestion without metadata", response)
 	}
-	if calls.Load() != 1 || len(a.dramas) != 1 || a.libraryDirty || a.libraryRevision != 0 || strings.Contains(w.Body.String(), "video_data") {
+	if calls.Load() != 1 || a.libraryLen() != 1 || a.libraryDirty || a.libraryRevision != 0 || strings.Contains(w.Body.String(), "video_data") {
 		t.Fatal("typing must not fetch, import or expose full drama metadata")
 	}
 }

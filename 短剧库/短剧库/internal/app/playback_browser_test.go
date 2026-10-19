@@ -97,7 +97,7 @@ func TestPlaybackBrowserFixture(t *testing.T) {
 	}
 	entry.Drama.Title, entry.Drama.TotalEpisode, entry.Drama.ReleaseStatus = "本机合成播放样本", len(entry.Chapters), "finished"
 	client.details["7000000000000000001"] = entry
-	app.dramas = []Drama{entry.Drama}
+	app.setLibraryDramas([]Drama{entry.Drama})
 	task := Task{DramaID: entry.Drama.ID, DramaTitle: entry.Drama.Title, Index: 1, Total: 1, OutPath: filepath.Join(mediaDir, "original.mp4"), Chapter: entry.Chapters[0]}
 	app.taskOrder = []string{"local-fixture"}
 	app.tasks["local-fixture"] = &UITask{ID: "local-fixture", DramaID: task.DramaID, DramaTitle: task.DramaTitle, Status: uiStatusSuccess, Path: task.OutPath, Source: task}

@@ -109,12 +109,12 @@ func TestManualBackfillPersistsPartialResultsAndContinuesAfterCatalogEnd(t *test
 		client.state.Feeds[genre.key] = hongguoCatalogCursor{Initialized: true, Exhausted: true}
 	}
 	client.mu.Unlock()
-	a := &UIApp{downloader: d, cfg: d.cfg, libraryAttempted: true, librarySources: map[string]librarySourceState{}, libraryApp: d.hongguoCatalogSnapshot(), dramas: []Drama{
+	a := &UIApp{downloader: d, cfg: d.cfg, libraryAttempted: true, librarySources: map[string]librarySourceState{}, libraryApp: d.hongguoCatalogSnapshot(), library: newLibraryStoreWith([]Drama{
 		{ID: "hongguo:" + first, Source: sourceHongguo, Title: "原有标题", Views: "0"},
 		{ID: "hongguo:" + bad, Source: sourceHongguo, Title: "暂时失败", Heat: "800"},
 		{ID: "hongguo:" + unknown, Source: sourceHongguo, Title: "站点日期未知"},
 		{ID: "huangdou:preserve", Source: sourceHuangdou, Title: "保留另一站"},
-	}}
+	})}
 	t.Cleanup(a.stopSortMetadata)
 	plain := httptest.NewRecorder()
 	a.handleDramas(plain, httptest.NewRequest("GET", "/api/ui/dramas", nil))
@@ -132,7 +132,7 @@ func TestManualBackfillPersistsPartialResultsAndContinuesAfterCatalogEnd(t *test
 	}
 	waitSortMetadataQueue(t, a)
 	a.mu.Lock()
-	rows := append([]Drama(nil), a.dramas...)
+	rows := append([]Drama(nil), a.libraryDramas()...)
 	progress := a.libraryMetadata
 	a.mu.Unlock()
 	if progress.Checked != 3 || progress.Failed != 1 {

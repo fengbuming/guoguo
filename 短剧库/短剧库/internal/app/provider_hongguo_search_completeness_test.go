@@ -250,7 +250,7 @@ func TestLibrarySearchCompletenessResponseAndPersistence(t *testing.T) {
 		Limited bool    `json:"limited"`
 		Saved   bool    `json:"saved"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != 200 || response.Query != hongguoSeasonSearchQuery || len(response.Data) != 27 || !response.Saved || !response.Limited || len(a.dramas) != 27 {
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != 200 || response.Query != hongguoSeasonSearchQuery || len(response.Data) != 27 || !response.Saved || !response.Limited || a.libraryLen() != 27 {
 		t.Fatal("search response/import lost completed results", w.Code, err)
 	}
 }

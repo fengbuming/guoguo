@@ -54,7 +54,7 @@ func TestCoverClickRepairIsolatedCoalescedAndPersisted(t *testing.T) {
 			untouched := coverRepairFixture()
 			untouched.ID = "hongguo:7000000000000000002"
 			untouched.SourceID = "7000000000000000002"
-			app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old, untouched}, libraryRevision: 10}
+			app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old, untouched}), libraryRevision: 10}
 			observed, _ := old.Cover.(string)
 			writers := make(chan *httptest.ResponseRecorder, 12)
 			go func() { writers <- coverRepairRequest(app, old.ID, observed) }()
@@ -123,11 +123,11 @@ func TestCoverClickRepairMissingInvalidAndRetry(t *testing.T) {
 				return rankingHTTPResponse(request, 200, fmt.Sprintf(`{"data":{"video_data":{"series_id_str":%q,"series_cover":%q}}}`, result.id, result.address)), nil
 			})
 			old := coverRepairFixture()
-			app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old}}
+			app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old})}
 			for index := 0; index < 2; index++ {
 				coverRepairRequest(app, old.ID, "")
 			}
-			if calls.Load() != 1 || !reflect.DeepEqual(app.dramas[0], old) {
+			if calls.Load() != 1 || !reflect.DeepEqual(app.libraryDramas()[0], old) {
 				t.Fatal("failed repair changed metadata or bypassed the cooldown")
 			}
 			app.mu.Lock()
@@ -149,25 +149,25 @@ func TestCoverClickRepairDoesNotOverwriteNewerCover(t *testing.T) {
 		return rankingHTTPResponse(request, 200, fmt.Sprintf(`{"data":{"video_data":{"series_id_str":"7000000000000000001","series_cover":%q}}}`, coverAddressFixture)), nil
 	})
 	old := coverRepairFixture()
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old})}
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- coverRepairRequest(app, old.ID, "") }()
 	<-entered
 	newer := coverAddressFixture + "&newer=1"
 	app.mu.Lock()
-	app.dramas[0].CoverURL = newer
-	normalizeDramaCover(&app.dramas[0])
+	app.mutateDramaAt(0, func(d *Drama) { d.CoverURL = newer })
+	app.mutateDramaAt(0, func(d *Drama) { normalizeDramaCover(d) })
 	app.mu.Unlock()
 	close(release)
 	writer := <-done
 	var result coverRepairResult
-	if json.Unmarshal(writer.Body.Bytes(), &result) != nil || coverPathFromAny(result.Cover) != newer || bestDramaCover(app.dramas[0]) != newer {
+	if json.Unmarshal(writer.Body.Bytes(), &result) != nil || coverPathFromAny(result.Cover) != newer || bestDramaCover(app.libraryDramas()[0]) != newer {
 		t.Fatal("late repair overwrote a newer cover", writer.Body.String())
 	}
 	app.mu.Lock()
-	app.dramas[0].CoverURL = newer + "&latest=1"
-	normalizeDramaCover(&app.dramas[0])
-	current := app.dramas[0]
+	app.mutateDramaAt(0, func(d *Drama) { d.CoverURL = newer + "&latest=1" })
+	app.mutateDramaAt(0, func(d *Drama) { normalizeDramaCover(d) })
+	current := app.libraryDramas()[0]
 	app.mu.Unlock()
 	writer = coverRepairRequest(app, old.ID, current.Cover.(string))
 	if json.Unmarshal(writer.Body.Bytes(), &result) != nil || coverPathFromAny(result.Cover) != bestDramaCover(current) {
@@ -183,7 +183,7 @@ func TestCoverClickRepairValidationAndCancellation(t *testing.T) {
 		return nil, request.Context().Err()
 	})
 	old := coverRepairFixture()
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old})}
 	for _, input := range []struct{ id, cover string }{
 		{"outside:1", ""}, {"hongguo:7000000000000000002", ""}, {old.ID, "https://example.invalid/arbitrary"},
 	} {

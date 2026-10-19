@@ -26,7 +26,7 @@ func (a *UIApp) handleVIPMetadata(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	var candidates []Drama
 	pending := 0
-	for _, drama := range a.dramas {
+	for _, drama := range a.libraryIndexDramas() {
 		if !needsHuangdouVIPMetadata(drama) {
 			continue
 		}

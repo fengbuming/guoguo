@@ -70,11 +70,11 @@ func TestPrimaryCatalogReturnsBeforeOptionalMetadataForAllSources(t *testing.T) 
 			if source == sourceHuangguoAI {
 				fresh.Heat = ""
 			}
-			app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old}, librarySources: map[string]librarySourceState{}, libraryLoading: make(chan struct{})}
+			app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old}), librarySources: map[string]librarySourceState{}, libraryLoading: make(chan struct{})}
 			t.Cleanup(app.stopSortMetadata)
 			app.acceptLibraryProgress(source, "", []Drama{old, fresh}, nil, false)
 			app.mu.Lock()
-			if calls.Load() != 0 || len(app.dramas) != 2 || app.dramas[1].Heat != fresh.Heat || app.dramas[1].Views != "0" {
+			if calls.Load() != 0 || app.libraryLen() != 2 || app.libraryDramas()[1].Heat != fresh.Heat || app.libraryDramas()[1].Views != "0" {
 				t.Error("primary fields did not return before optional requests")
 			}
 			close(app.libraryLoading)
@@ -146,7 +146,7 @@ func TestResumeOnlyPreviouslyQueuedMetadata(t *testing.T) {
 	}
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if app.dramas[0].SortMetadata != nil || app.dramas[1].OnlineDate != "" || app.dramas[1].Views != "0" || app.dramas[1].SortMetadata.Version != sortMetadataVersion {
+	if app.libraryDramas()[0].SortMetadata != nil || app.libraryDramas()[1].OnlineDate != "" || app.libraryDramas()[1].Views != "0" || app.libraryDramas()[1].SortMetadata.Version != sortMetadataVersion {
 		t.Fatal("resume changed history, lost zero, or invented an empty source date")
 	}
 }

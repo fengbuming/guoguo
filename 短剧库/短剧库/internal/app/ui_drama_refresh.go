@@ -63,12 +63,8 @@ func (a *UIApp) handleDramaRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *UIApp) dramaForRefreshLocked(id string) Drama {
-	for _, drama := range a.dramas {
-		if drama.ID == id {
-			return drama
-		}
-	}
-	return Drama{}
+	drama, _ := a.libraryDrama(id)
+	return drama
 }
 
 func (a *UIApp) dramaRefreshResultLocked(id string, call *dramaRefreshCall) dramaRefreshResult {
@@ -138,22 +134,20 @@ func (a *UIApp) refreshDramaMetadata(ctx context.Context, drama Drama) (dramaRef
 	changed := false
 	a.mu.Lock()
 	if ctx.Err() == nil && patch.ID == drama.ID {
-		for index, current := range a.dramas {
-			if current.ID != drama.ID {
-				continue
-			}
+		a.libraryUpdate(drama.ID, func(current *Drama) bool {
 			if err == nil {
-				patch.SortMetadata = completedDramaMetadata(current)
+				patch.SortMetadata = completedDramaMetadata(*current)
 			}
-			updated := mergeRefreshedDrama(patch, current, drama)
-			if !reflect.DeepEqual(updated, current) {
-				a.dramas[index] = updated
-				a.libraryDirty = true
-				a.libraryRevision++
-				changed = true
+			updated := mergeRefreshedDrama(patch, *current, drama)
+			if reflect.DeepEqual(updated, *current) {
+				return false
 			}
-			break
-		}
+			*current = updated
+			a.libraryDirty = true
+			a.libraryRevision++
+			changed = true
+			return true
+		})
 	}
 	a.mu.Unlock()
 	if changed {

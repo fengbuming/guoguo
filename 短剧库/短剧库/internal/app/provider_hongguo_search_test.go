@@ -92,11 +92,11 @@ func TestLibrarySearchReturnsMergedSortMetadata(t *testing.T) {
 			return rankingHTTPResponse(request, 404, ""), nil
 		}
 	})
-	a := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{
+	a := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{
 		{ID: "hongguo:7000000000000000001", Source: sourceHongguo, Title: "旧标题", Heat: "100", Views: "320次播放", OnlineDate: "2026-09-01"},
 		{ID: "hongguo:7000000000000000003", Source: sourceHongguo, Title: "已知剧", Heat: "800", Views: "0"},
 		{ID: "huangdou:existing", Source: sourceHuangdou, Title: "保留其他站源"},
-	}}
+	})}
 	t.Cleanup(a.stopSortMetadata)
 	for attempt := 0; attempt < 2; attempt++ {
 		writer := httptest.NewRecorder()
@@ -111,7 +111,7 @@ func TestLibrarySearchReturnsMergedSortMetadata(t *testing.T) {
 		if err := json.Unmarshal(writer.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		if len(result.Data) != 3 || len(a.dramas) != 4 || !result.Saved {
+		if len(result.Data) != 3 || a.libraryLen() != 4 || !result.Saved {
 			t.Fatal("search did not merge and persist all matching dramas")
 		}
 		first := result.Data[0]
@@ -122,7 +122,7 @@ func TestLibrarySearchReturnsMergedSortMetadata(t *testing.T) {
 			t.Error("missing search fields must not erase previously known metrics or zero")
 		}
 		for _, drama := range result.Data {
-			for _, cached := range a.dramas {
+			for _, cached := range a.libraryDramas() {
 				if cached.ID == drama.ID && (cached.Heat != drama.Heat || cached.Views != drama.Views || cached.OnlineDate != drama.OnlineDate) {
 					t.Error("search response and library snapshot disagree about sort metadata")
 				}
@@ -136,7 +136,7 @@ func TestLibrarySearchReturnsMergedSortMetadata(t *testing.T) {
 	waitSortMetadataQueue(t, a)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, row := range a.dramas {
+	for _, row := range a.libraryDramas() {
 		if row.ID == "hongguo:7000000000000000002" && (row.OnlineDate != "2026-03-16" || row.Heat != "0" || row.Views != "0" || row.SortMetadata.Version != sortMetadataVersion) {
 			t.Fatal("new search entry was not completed asynchronously")
 		}

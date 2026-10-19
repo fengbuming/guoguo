@@ -131,7 +131,7 @@ func TestRecommendationAPIValidationAndCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation not propagated: %v", err)
 	}
-	if len(app.dramas) != 0 || app.libraryRevision != 0 {
+	if app.libraryLen() != 0 || app.libraryRevision != 0 {
 		t.Fatal("canceled request changed library")
 	}
 }
@@ -140,7 +140,7 @@ func TestRecommendationAPIPersistsNewDramasAndKeepsKnownMetadata(t *testing.T) {
 	d := rankingTestDownloader(t, func(request *http.Request) (*http.Response, error) {
 		return rankingHTTPResponse(request, 200, recommendationFixture([]string{"2", "1"}, 18, true)), nil
 	})
-	app := &UIApp{downloader: d, cfg: d.cfg, metadataClosed: true, dramas: []Drama{{ID: "hongguo:1", Source: sourceHongguo, Title: "旧标题", Views: "0", OnlineDate: "2026-09-01"}}}
+	app := &UIApp{downloader: d, cfg: d.cfg, metadataClosed: true, library: newLibraryStoreWith([]Drama{{ID: "hongguo:1", Source: sourceHongguo, Title: "旧标题", Views: "0", OnlineDate: "2026-09-01"}})}
 	writer := httptest.NewRecorder()
 	app.routes().ServeHTTP(writer, httptest.NewRequest(http.MethodPost, "/api/ui/recommendations", strings.NewReader(`{"genre":"short_play"}`)))
 	if writer.Code != http.StatusOK {
@@ -158,7 +158,7 @@ func TestRecommendationAPIPersistsNewDramasAndKeepsKnownMetadata(t *testing.T) {
 	}
 	restored := &UIApp{downloader: d, cfg: d.cfg}
 	restored.loadLibrary()
-	if len(restored.dramas) != 2 {
+	if restored.libraryLen() != 2 {
 		t.Fatal("recommended dramas were not persisted for play and download")
 	}
 }

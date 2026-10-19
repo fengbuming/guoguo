@@ -30,7 +30,7 @@ func TestCoverTargetFollowsMetadataWithoutFetchingStaleAddress(t *testing.T) {
 		requested = append(requested, request.URL.String())
 		return rankingHTTPResponse(request, http.StatusServiceUnavailable, "text-only upstream fixture"), nil
 	})
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{{ID: id, Source: sourceHongguo, CoverURL: freshAddress}}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{{ID: id, Source: sourceHongguo, CoverURL: freshAddress}})}
 	for _, observed := range []string{oldAddress, "https://unregistered.example.org/unused", freshAddress} {
 		local := "/api/ui/image?url=" + url.QueryEscape(observed) + "&dramaId=" + url.QueryEscape(id)
 		request := httptest.NewRequest(http.MethodGet, local, nil)
@@ -59,7 +59,7 @@ func TestCoverTargetRetainsRegistrationAndPermissions(t *testing.T) {
 		calls++
 		return rankingHTTPResponse(request, http.StatusServiceUnavailable, "text-only upstream fixture"), nil
 	})
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{{ID: id, Source: sourceHongguo, CoverURL: address}}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{{ID: id, Source: sourceHongguo, CoverURL: address}})}
 	for _, test := range []struct {
 		name, id, address string
 		denied            bool

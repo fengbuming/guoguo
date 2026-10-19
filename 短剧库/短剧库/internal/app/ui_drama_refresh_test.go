@@ -55,7 +55,7 @@ func TestDramaRefreshWithHealthyCoverCoalescesPersistsAndDoesNotBlockReads(t *te
 	normalizeDramaCover(&old)
 	other := dramaRefreshFixture()
 	other.ID, other.SourceID = "hongguo:7000000000000000002", "7000000000000000002"
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old, other}, libraryRevision: 20}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old, other}), libraryRevision: 20}
 	const requests = 10
 	writers := make(chan *httptest.ResponseRecorder, requests)
 	go func() { writers <- dramaRefreshRequest(app, old.ID) }()
@@ -130,7 +130,7 @@ func TestDramaRefreshFailureValidationPermissionsAndRetry(t *testing.T) {
 		return rankingHTTPResponse(request, 200, refreshMetadataFixture("7000000000000000002")), nil
 	})
 	old := dramaRefreshFixture()
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old})}
 	for _, id := range []string{"unknown:1", "hongguo:7000000000000000003"} {
 		if response := dramaRefreshRequest(app, id); response.Code < 400 {
 			t.Fatal("invalid or missing drama accepted", response.Code)
@@ -151,7 +151,7 @@ func TestDramaRefreshFailureValidationPermissionsAndRetry(t *testing.T) {
 			t.Fatal("failed lookup erased usable metadata or lost its warning", response.Body.String())
 		}
 	}
-	if calls.Load() != 2 || !reflect.DeepEqual(app.dramas[0], old) {
+	if calls.Load() != 2 || !reflect.DeepEqual(app.libraryDramas()[0], old) {
 		t.Fatal("failed refresh bypassed cooldown or changed existing metadata", calls.Load())
 	}
 	app.mu.Lock()
@@ -173,13 +173,13 @@ func TestOnlineOnlyAccountMayRefreshAllowedDramaMetadata(t *testing.T) {
 		return rankingHTTPResponse(request, 200, refreshMetadataFixture("7000000000000000001")), nil
 	})
 	old := dramaRefreshFixture()
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{old}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{old})}
 	request := httptest.NewRequest(http.MethodPost, "/api/ui/dramas/refresh", strings.NewReader(fmt.Sprintf(`{"dramaId":%q}`, old.ID)))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(withSourceScope(request.Context(), accountRecord{Sources: []string{sourceHongguo}, OnlineOnly: true}))
 	writer := httptest.NewRecorder()
 	app.handleDramaRefresh(writer, request)
-	if writer.Code != http.StatusOK || app.dramas[0].Desc == "" {
+	if writer.Code != http.StatusOK || app.libraryDramas()[0].Desc == "" {
 		t.Fatal("online-only permission blocked viewing metadata", writer.Code, writer.Body.String())
 	}
 }

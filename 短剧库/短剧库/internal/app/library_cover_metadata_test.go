@@ -29,7 +29,7 @@ func TestHongguoRankingKeepsCoverAddressForLibrary(t *testing.T) {
 	app := &UIApp{downloader: d, cfg: d.cfg, metadataClosed: true}
 	page.BoardID, page.Page, page.FetchedAt = board.ID, 1, time.Now()
 	app.acceptRankingDramas(page)
-	for _, drama := range app.dramas {
+	for _, drama := range app.libraryDramas() {
 		if drama.ID == page.Items[0].Drama.ID && drama.Cover != "/api/ui/image?url="+url.QueryEscape(coverAddressFixture)+"&dramaId="+url.QueryEscape(drama.ID) {
 			t.Fatal("ranking address bypassed the local cover route")
 		}
@@ -69,7 +69,7 @@ func TestHistoricalMissingCoverWaitsForManualUpdate(t *testing.T) {
 			app.loadLibrary()
 			app.handleDramas(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/ui/dramas", nil))
 			app.mu.Lock()
-			if calls.Load() != 0 || app.metadataDone != nil || len(app.newSortMetadataDramasLocked([]Drama{old})) != 0 || sortMetadataRemaining(app.dramas)[sourceHongguo] != 1 {
+			if calls.Load() != 0 || app.metadataDone != nil || len(app.newSortMetadataDramasLocked([]Drama{old})) != 0 || sortMetadataRemaining(app.libraryDramas())[sourceHongguo] != 1 {
 				app.mu.Unlock()
 				t.Fatal("ordinary loading migrated historical addresses or hid their pending update")
 			}

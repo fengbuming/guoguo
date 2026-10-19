@@ -51,7 +51,7 @@ func TestHuangguoImageProxyAcceptsKnownCDNAliases(t *testing.T) {
 					}
 					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(payload.data)), Request: request}, nil
 				})
-				app := &UIApp{downloader: downloader, cfg: downloader.cfg, dramas: []Drama{{ID: "huangguoai:501", Source: sourceHuangguoAI, CoverURL: address}}}
+				app := &UIApp{downloader: downloader, cfg: downloader.cfg, library: newLibraryStoreWith([]Drama{{ID: "huangguoai:501", Source: sourceHuangguoAI, CoverURL: address}})}
 				for range 2 {
 					request := httptest.NewRequest(http.MethodGet, "/api/ui/image?url="+url.QueryEscape(address), nil)
 					request = request.WithContext(withSourceScope(context.Background(), accountRecord{Sources: []string{"huangguo"}}))
@@ -99,7 +99,7 @@ func TestHuangguoImageProxyValidatesRedirects(t *testing.T) {
 				}
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(plain)), Request: request}, nil
 			})
-			app := &UIApp{downloader: downloader, cfg: downloader.cfg, dramas: []Drama{{ID: "huangguoai:501", Source: sourceHuangguoAI, CoverURL: "https://pic.zdmhyg.cn/upload/synthetic.jpg"}}}
+			app := &UIApp{downloader: downloader, cfg: downloader.cfg, library: newLibraryStoreWith([]Drama{{ID: "huangguoai:501", Source: sourceHuangguoAI, CoverURL: "https://pic.zdmhyg.cn/upload/synthetic.jpg"}})}
 			request := httptest.NewRequest(http.MethodGet, "/api/ui/image?url="+url.QueryEscape("https://pic.zdmhyg.cn/upload/synthetic.jpg"), nil)
 			writer := httptest.NewRecorder()
 			app.handleImage(writer, request)
@@ -117,7 +117,7 @@ func TestHuangguoImageProxyRetainsURLAndSourceRestrictions(t *testing.T) {
 		return rankingHTTPResponse(request, http.StatusOK, "forbidden request"), nil
 	})
 	address := "https://pic.tuafjz.cn/upload/synthetic.jpg?auth_key=fixture"
-	app := &UIApp{downloader: downloader, cfg: downloader.cfg, dramas: []Drama{{ID: "huangguoai:501", Source: sourceHuangguoAI, CoverURL: address}}}
+	app := &UIApp{downloader: downloader, cfg: downloader.cfg, library: newLibraryStoreWith([]Drama{{ID: "huangguoai:501", Source: sourceHuangguoAI, CoverURL: address}})}
 	for _, target := range []string{
 		"https://pic.tuafjz.cn.example.invalid/cover",
 		"https://pic.tuafjz.cn@127.0.0.1/cover", "https://user@pic.tuafjz.cn/cover", "https://pic.tuafjz.cn:8443/cover",

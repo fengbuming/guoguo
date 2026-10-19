@@ -17,11 +17,11 @@ import (
 
 func followingFixture(t *testing.T) *UIApp {
 	t.Helper()
-	return &UIApp{cfg: Config{dataDir: t.TempDir()}, dramas: []Drama{
+	return &UIApp{cfg: Config{dataDir: t.TempDir()}, library: newLibraryStoreWith([]Drama{
 		{ID: historyFixtureDramaID, Title: "无图测试小剧场", TotalEpisode: 3},
 		{ID: "huangdou:7000000000000000001", Title: "无图测试小剧场", TotalEpisode: 5},
 		{ID: "huangguoai:10001", Title: "未提供集数的本地测试"},
-	}}
+	})}
 }
 
 func followingListForTest(t *testing.T, app *UIApp) []followingView {
@@ -50,7 +50,7 @@ func followingChangeForTest(t *testing.T, app *UIApp, input map[string]any) {
 
 func TestFollowingPersistsSeparatelyFromPlaybackAndSameNames(t *testing.T) {
 	app, session := historyFixtureApp(t)
-	app.dramas = followingFixture(t).dramas
+	app.setLibraryDramas(followingFixture(t).libraryDramas())
 	if _, saved, err := app.recordPlaybackProgress(fixtureViewer(app), session.id, historyProgress(1, 24)); err != nil || !saved {
 		t.Fatal(saved, err)
 	}
@@ -58,7 +58,7 @@ func TestFollowingPersistsSeparatelyFromPlaybackAndSameNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{historyFixtureDramaID, app.dramas[1].ID} {
+	for _, id := range []string{historyFixtureDramaID, app.libraryDramas()[1].ID} {
 		followingChangeForTest(t, app, map[string]any{"dramaId": id, "saved": true})
 	}
 	followingChangeForTest(t, app, map[string]any{"dramaId": historyFixtureDramaID, "completed": true})
@@ -74,7 +74,7 @@ func TestFollowingPersistsSeparatelyFromPlaybackAndSameNames(t *testing.T) {
 		}
 	}
 	followingChangeForTest(t, restarted, map[string]any{"dramaId": historyFixtureDramaID, "completed": false})
-	if entries := followingListForTest(t, restarted); len(entries) != 1 || entries[0].DramaID != app.dramas[1].ID {
+	if entries := followingListForTest(t, restarted); len(entries) != 1 || entries[0].DramaID != app.libraryDramas()[1].ID {
 		t.Fatal("removing manual completion did not clean the entry", entries)
 	}
 	after, _ := os.ReadFile(fixtureViewer(app).playbackHistory().path)
@@ -89,7 +89,7 @@ func TestFollowingPersistsSeparatelyFromPlaybackAndSameNames(t *testing.T) {
 func TestFollowingNewEpisodesRequireKnownCountAndExplicitAcknowledgement(t *testing.T) {
 	app := followingFixture(t)
 	followingChangeForTest(t, app, map[string]any{"dramaId": historyFixtureDramaID, "saved": true})
-	app.dramas[0].TotalEpisode = "6"
+	app.mutateDramaAt(0, func(d *Drama) { d.TotalEpisode = "6" })
 	before, _ := os.ReadFile(fixtureViewer(app).followingStore().path)
 	entry := followingListForTest(t, app)[0]
 	if entry.NewEpisodes != 3 || entry.TotalEpisode != 6 || entry.KnownEpisodes != 3 {
@@ -104,13 +104,13 @@ func TestFollowingNewEpisodesRequireKnownCountAndExplicitAcknowledgement(t *test
 	if entry.NewEpisodes != 0 || entry.KnownEpisodes != 6 || entry.Completed {
 		t.Fatal("acknowledging updates changed completion", entry)
 	}
-	app.dramas[0].TotalEpisode = 2
+	app.mutateDramaAt(0, func(d *Drama) { d.TotalEpisode = 2 })
 	if entry := followingListForTest(t, app)[0]; entry.NewEpisodes != 0 {
 		t.Fatal("catalog reduction produced an update", entry)
 	}
-	unknownID := app.dramas[2].ID
+	unknownID := app.libraryDramas()[2].ID
 	followingChangeForTest(t, app, map[string]any{"dramaId": unknownID, "saved": true})
-	app.dramas[2].TotalEpisode = 20
+	app.mutateDramaAt(2, func(d *Drama) { d.TotalEpisode = 20 })
 	for _, entry := range followingListForTest(t, app) {
 		if entry.DramaID == unknownID && (entry.NewEpisodes != 0 || entry.TotalEpisode != 20) {
 			t.Fatal("unknown original episode count fabricated new episodes", entry)
@@ -127,7 +127,7 @@ func TestFollowingAcceptsHistoryOnlyMetadataAndBoundsStoredText(t *testing.T) {
 	if entry := followingListForTest(t, app)[0]; entry.Title != session.tasks[0].DramaTitle || entry.Source != "hongguo" {
 		t.Fatal("known history was not usable without the catalog", entry)
 	}
-	app.dramas = []Drama{{ID: historyFixtureDramaID, Title: strings.Repeat("剧", 2000), CategoryName: strings.Repeat("分类", 1000)}}
+	app.setLibraryDramas([]Drama{{ID: historyFixtureDramaID, Title: strings.Repeat("剧", 2000), CategoryName: strings.Repeat("分类", 1000)}})
 	followingChangeForTest(t, app, map[string]any{"dramaId": historyFixtureDramaID, "completed": true})
 	entries, err := newFollowingStore(fixtureViewer(app).directory).list()
 	if err != nil || len(entries) != 1 || len(entries[0].Title) > 4096 || len(entries[0].Category) > 512 || !utf8.ValidString(entries[0].Title) || !utf8.ValidString(entries[0].Category) {
@@ -169,12 +169,12 @@ func TestFollowingRejectsCrossSiteUnknownAndMalformedRequests(t *testing.T) {
 
 func TestFollowingConcurrentUpdatesSurviveRestart(t *testing.T) {
 	app := followingFixture(t)
-	app.dramas = nil
+	app.setLibraryDramas(nil)
 	for index := 0; index < 24; index++ {
-		app.dramas = append(app.dramas, Drama{ID: fmt.Sprintf("hongguo:%d", int64(7000000000000000000)+int64(index)), Title: "并发无图测试"})
+		app.setLibraryDramas(append(app.libraryDramas(), Drama{ID: fmt.Sprintf("hongguo:%d", int64(7000000000000000000)+int64(index)), Title: "并发无图测试"}))
 	}
 	var wait sync.WaitGroup
-	for _, drama := range app.dramas {
+	for _, drama := range app.libraryDramas() {
 		for _, field := range []string{"saved", "completed"} {
 			wait.Add(1)
 			go func(id, field string) {
@@ -192,7 +192,7 @@ func TestFollowingConcurrentUpdatesSurviveRestart(t *testing.T) {
 	}
 	wait.Wait()
 	entries, err := newFollowingStore(fixtureViewer(app).directory).list()
-	if err != nil || len(entries) != len(app.dramas) {
+	if err != nil || len(entries) != app.libraryLen() {
 		t.Fatal("concurrent entries were lost", len(entries), err)
 	}
 	for _, entry := range entries {
@@ -223,7 +223,7 @@ func TestFollowingWriteFailureRollsBackAndCorruptFilesArePreserved(t *testing.T)
 		if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		restarted := &UIApp{cfg: app.cfg, dramas: app.dramas}
+		restarted := &UIApp{cfg: app.cfg, library: app.library}
 		writer := historyJSONRequest(t, restarted, restarted.handleFollowing, "/api/ui/following", map[string]any{"dramaId": historyFixtureDramaID, "saved": true})
 		if writer.Code != http.StatusInternalServerError {
 			t.Fatal("invalid storage was silently replaced", writer.Code)

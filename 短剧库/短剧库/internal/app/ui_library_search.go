@@ -94,9 +94,11 @@ func (app *UIApp) importSourceSearchDramas(source string, items []Drama) []Drama
 		app.mu.Lock()
 		app.normalizeDramaCovers(dramas)
 		known := make(map[string]Drama, len(dramas))
-		for _, drama := range app.dramas {
-			if _, found := positions[drama.ID]; found {
-				known[drama.ID] = drama
+		for _, entry := range app.libraryEntries() {
+			if _, found := positions[entry.ID]; found {
+				if drama, ok := app.libraryDrama(entry.ID); ok {
+					known[drama.ID] = drama
+				}
 			}
 		}
 		changed := app.librarySources[source].Status == ""
@@ -113,7 +115,7 @@ func (app *UIApp) importSourceSearchDramas(source string, items []Drama) []Drama
 			return dramas
 		}
 		newDramas := app.newSortMetadataDramasLocked(dramas)
-		app.dramas = mergeSourceDramas(app.dramas, dramas, nil, source)
+		app.libraryMerge(dramas)
 		app.enqueueSortMetadataLocked(newDramas, false)
 		app.loadedAt = time.Now()
 		if app.librarySources == nil {
@@ -121,13 +123,14 @@ func (app *UIApp) importSourceSearchDramas(source string, items []Drama) []Drama
 		}
 		state := app.librarySources[source]
 		state.Count = 0
-		for _, drama := range app.dramas {
-			if dramaProvider(drama) == source {
+		for _, entry := range app.libraryEntries() {
+			if entryProvider(entry) == source {
 				state.Count++
 			}
-			if index, found := positions[drama.ID]; found {
-
-				dramas[index] = drama
+			if index, found := positions[entry.ID]; found {
+				if drama, ok := app.libraryDrama(entry.ID); ok {
+					dramas[index] = drama
+				}
 			}
 		}
 		state.UpdatedAt = app.loadedAt

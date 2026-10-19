@@ -104,7 +104,7 @@ func TestEmbyCoverWithoutCookiesChecksSignatureAndCurrentPermissions(t *testing.
 	store := app.browserViewers().accountStore()
 	owner := store.state.Accounts["poster-viewer"].ID
 	viewerResultOK(t, admin.request(t, http.MethodPost, "/api/ui/admin/settings", map[string]bool{"requireLogin": true, "allowRegistration": true}))
-	app.dramas[0].CoverURL = embyFixtureCover
+	app.mutateDramaAt(0, func(d *Drama) { d.CoverURL = embyFixtureCover })
 	data := embySyntheticPoster(t)
 	var calls atomic.Int32
 	app.downloader.client.Transport = embyPosterTestTransport(func(request *http.Request) (*http.Response, error) {
@@ -118,7 +118,7 @@ func TestEmbyCoverWithoutCookiesChecksSignatureAndCurrentPermissions(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := embyCoverURL(app.dramas[0], "http://library.test", key, owner)
+	address := embyCoverURL(app.libraryDramas()[0], "http://library.test", key, owner)
 	request := func(handler http.Handler, method, address string) *httptest.ResponseRecorder {
 		result := httptest.NewRecorder()
 		handler.ServeHTTP(result, httptest.NewRequest(method, address, nil))
@@ -151,7 +151,7 @@ func TestEmbyCoverWithoutCookiesChecksSignatureAndCurrentPermissions(t *testing.
 	if result := request(app.routes(), http.MethodPost, address); result.Code != 405 {
 		t.Fatal("unsupported cover method accepted")
 	}
-	restarted := &UIApp{cfg: app.cfg, downloader: app.downloader, dramas: app.dramas}
+	restarted := &UIApp{cfg: app.cfg, downloader: app.downloader, library: app.library}
 	if result := request(restarted.routes(), http.MethodGet, address); result.Code != 200 {
 		t.Fatal("poster link did not survive restart", result.Code)
 	}
@@ -192,7 +192,7 @@ func TestEmbyPostersScanDelayRetryRestartAndCustomArtwork(t *testing.T) {
 	manager := app.embySyncer()
 	viewerResultOK(t, admin.request(t, http.MethodPost, "/api/ui/following", map[string]any{"dramaId": historyFixtureDramaID, "saved": true}))
 	viewerResultOK(t, admin.request(t, http.MethodPost, "/api/ui/admin/settings", map[string]bool{"requireLogin": true, "allowRegistration": true}))
-	app.dramas[0].CoverURL = embyFixtureCover
+	app.mutateDramaAt(0, func(d *Drama) { d.CoverURL = embyFixtureCover })
 	data := embySyntheticPoster(t)
 	var imageRequests atomic.Int32
 	app.downloader.client.Transport = embyPosterTestTransport(func(request *http.Request) (*http.Response, error) {
@@ -209,7 +209,7 @@ func TestEmbyPostersScanDelayRetryRestartAndCustomArtwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	folder := embyFolderName(app.dramas[0])
+	folder := embyFolderName(app.libraryDramas()[0])
 	var ready, failDownload, delayConfirmation atomic.Bool
 	var scans, uploads atomic.Int32
 	var imageTag atomic.Value
@@ -299,7 +299,7 @@ func TestEmbyPostersScanDelayRetryRestartAndCustomArtwork(t *testing.T) {
 	if uploads.Load() != 1 {
 		t.Fatal("unchanged artwork was downloaded again")
 	}
-	restarted := &UIApp{cfg: app.cfg, downloader: app.downloader, dramas: app.dramas}
+	restarted := &UIApp{cfg: app.cfg, downloader: app.downloader, library: app.library}
 	manager = restarted.embySyncer()
 	if manager.loadErr != nil || manager.document.Entries[historyFixtureDramaID].Poster.ImageTag == "" {
 		t.Fatal("restart lost managed artwork state", manager.loadErr)
@@ -311,12 +311,12 @@ func TestEmbyPostersScanDelayRetryRestartAndCustomArtwork(t *testing.T) {
 	}
 	setCover := func(address string) {
 		app.mu.Lock()
-		app.dramas = append([]Drama(nil), app.dramas...)
-		app.dramas[0].CoverURL = address
-		dramas := append([]Drama(nil), app.dramas...)
+		app.setLibraryDramas(append([]Drama(nil), app.libraryDramas()...))
+		app.mutateDramaAt(0, func(d *Drama) { d.CoverURL = address })
+		dramas := append([]Drama(nil), app.libraryDramas()...)
 		app.mu.Unlock()
 		restarted.mu.Lock()
-		restarted.dramas = dramas
+		restarted.setLibraryDramas(dramas)
 		restarted.mu.Unlock()
 	}
 	setCover(embyFixtureCover + "&revision=2")

@@ -306,7 +306,7 @@ func TestRankingHandlerRegistersPlayableMetadataOnce(t *testing.T) {
 			return rankingHTTPResponse(request, 404, ""), nil
 		}
 	})
-	a := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{{ID: "hongguo:7681903520873729048", Source: sourceHongguo, Title: "旧标题", OnlineDate: "2026-09-01"}, {ID: "huangdou:existing", Source: sourceHuangdou, Title: "保留其他站源"}}}
+	a := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{{ID: "hongguo:7681903520873729048", Source: sourceHongguo, Title: "旧标题", OnlineDate: "2026-09-01"}, {ID: "huangdou:existing", Source: sourceHuangdou, Title: "保留其他站源"}})}
 	t.Cleanup(a.stopSortMetadata)
 	for _, test := range []struct {
 		method, path string
@@ -337,10 +337,10 @@ func TestRankingHandlerRegistersPlayableMetadataOnce(t *testing.T) {
 			firstRevision = a.libraryRevision
 		}
 	}
-	if len(a.dramas) != 3 || a.libraryRevision != firstRevision || !a.librarySaved || calls.Load() != 1 {
+	if a.libraryLen() != 3 || a.libraryRevision != firstRevision || !a.librarySaved || calls.Load() != 1 {
 		t.Fatal("rankings must merge into the existing library once, including previously unseen dramas")
 	}
-	for _, drama := range a.dramas {
+	for _, drama := range a.libraryDramas() {
 		if drama.ID == "hongguo:7681903520873729048" && (drama.OnlineDate != "2026-09-01" || drama.Heat != "1.2亿热度") {
 			t.Fatal("ranking enrichment lost prior metadata")
 		}
@@ -349,7 +349,7 @@ func TestRankingHandlerRegistersPlayableMetadataOnce(t *testing.T) {
 	waitSortMetadataQueue(t, a)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, drama := range a.dramas {
+	for _, drama := range a.libraryDramas() {
 		if drama.ID == "hongguo:7680883072278989849" && (drama.OnlineDate != "2026-03-16" || drama.Heat != "90000001" || drama.Views != "10019次播放" || drama.SortMetadata.Version != sortMetadataVersion) {
 			t.Fatal("new ranking entry was not completed asynchronously")
 		}

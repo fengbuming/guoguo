@@ -296,9 +296,11 @@ func (manager *embySyncManager) targets(ctx context.Context, config embySyncSett
 			}
 		}
 	}
-	for _, drama := range app.dramas {
-		if _, exists := selected[drama.ID]; exists {
-			selected[drama.ID] = drama
+	for _, entry := range app.libraryEntries() {
+		if _, exists := selected[entry.ID]; exists {
+			if drama, found := app.libraryDrama(entry.ID); found {
+				selected[entry.ID] = drama
+			}
 		}
 	}
 	app.mu.Unlock()

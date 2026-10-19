@@ -44,7 +44,7 @@ func TestHuangguoHistoryRepairsOnlyAfterManualUpdate(t *testing.T) {
 	app.loadLibrary()
 	plain := httptest.NewRecorder()
 	app.handleDramas(plain, httptest.NewRequest(http.MethodGet, "/api/ui/dramas", nil))
-	if calls.Load() != 0 || app.dramas[0].Title != rows[0].Title || app.metadataDone != nil {
+	if calls.Load() != 0 || app.libraryDramas()[0].Title != rows[0].Title || app.metadataDone != nil {
 		t.Fatal("ordinary cache loading or reading triggered a historical migration")
 	}
 	writer := httptest.NewRecorder()

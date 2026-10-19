@@ -133,11 +133,8 @@ func (app *UIApp) handleEmbyExport(writer http.ResponseWriter, request *http.Req
 	app.mu.Lock()
 	var drama Drama
 	grouped := app.cfg.GroupBySource
-	for _, item := range app.dramas {
-		if item.ID == input.DramaID {
-			drama = item
-			break
-		}
+	if item, found := app.libraryDrama(input.DramaID); found {
+		drama = item
 	}
 	if drama.ID == "" {
 		if merged := app.merges[input.DramaID]; merged != nil && merged.Status == "success" {

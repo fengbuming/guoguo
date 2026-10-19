@@ -110,7 +110,7 @@ func (a *UIApp) startLibraryLoadLocked(source string, mode libraryLoadMode, prio
 			return
 		}
 	}
-	previousCount := len(a.dramas)
+	previousCount := a.libraryLen()
 	a.libraryAttempted = true
 	a.libraryLoading = make(chan struct{})
 	a.libraryMore = more
@@ -138,7 +138,7 @@ func (a *UIApp) startLibraryLoadLocked(source string, mode libraryLoadMode, prio
 	if category != "" {
 		ctx = context.WithValue(ctx, libraryCategoryKey{}, category)
 	}
-	ctx = withKnownHongguoDramas(ctx, a.dramas)
+	ctx = withKnownHongguoDramas(ctx, a.libraryIndexDramas())
 	go func() {
 		defer cancel()
 		var loadErr error
@@ -179,7 +179,7 @@ func (a *UIApp) startLibraryLoadLocked(source string, mode libraryLoadMode, prio
 		a.libraryLoadingPhase = ""
 		a.libraryLoadingCategory = ""
 		a.libraryRevision++
-		count := len(a.dramas)
+		count := a.libraryLen()
 		a.mu.Unlock()
 		fmt.Printf("本地剧库：%d 部，本次新增 %d 部\n", count, count-previousCount)
 	}()
@@ -254,33 +254,17 @@ func (a *UIApp) acceptLibraryProgress(source, category string, items []Drama, lo
 		}
 	}
 	if done {
-		var mergeErr error
-		if loadErr != nil {
-			mergeErr = &libraryLoadError{failures: map[string]error{source: loadErr}}
-		}
-		a.dramas = mergeSourceDramas(a.dramas, items, mergeErr, source)
+		// 只合并本次命中的条目并保持标题排序，未涉及的剧集不产生磁盘读写
+		a.libraryMerge(items)
 	} else {
-		positions := make(map[string]int, len(a.dramas))
-		for index, drama := range a.dramas {
-			positions[drama.ID] = index
-		}
-		for _, drama := range items {
-			if drama.ID == "" {
-				continue
-			}
-			if position, found := positions[drama.ID]; found {
-				a.dramas[position] = mergeDramaMetadata(drama, a.dramas[position])
-			} else {
-				positions[drama.ID] = len(a.dramas)
-				a.dramas = append(a.dramas, drama)
-			}
-		}
+		// 增量合并只处理本次命中的条目，未涉及的剧集不产生磁盘读取。
+		a.libraryUpsert(items)
 	}
 	a.enqueueSortMetadataLocked(newDramas, false)
 	state := a.librarySources[source]
 	state.Count = 0
-	for _, drama := range a.dramas {
-		if dramaProvider(drama) == source {
+	for _, entry := range a.libraryEntries() {
+		if entryProvider(entry) == source {
 			state.Count++
 		}
 	}
@@ -337,17 +321,14 @@ func (a *UIApp) persistLibrary() error {
 	a.libraryWriteMu.Lock()
 	defer a.libraryWriteMu.Unlock()
 	a.mu.Lock()
-	cache := libraryCache{Dramas: append([]Drama{}, a.dramas...), LoadedAt: a.loadedAt, LastError: librarySourceErrors(a.librarySources), Sources: cloneLibrarySources(a.librarySources), HongguoApp: cloneHongguoCatalogState(a.libraryApp), ProviderCatalog: cloneProviderCatalog(a.libraryProviders)}
 	revision := a.libraryRevision
+	err := a.persistLibraryLocked()
 	a.mu.Unlock()
-	err := writeLibraryCache(a.cfg.dataDirectory(), cache)
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err != nil {
-		a.libraryError = strings.TrimSpace(cache.LastError + "\n剧库缓存保存失败: " + a.redactError(err))
-		a.libraryRevision++
 		return err
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.librarySaved = true
 	if revision == a.libraryRevision {
 		a.libraryDirty = false
@@ -355,10 +336,28 @@ func (a *UIApp) persistLibrary() error {
 	return nil
 }
 
+// persistLibraryLocked 在已持有 a.mu 时落盘：只写改动过的分片与索引。
+func (a *UIApp) persistLibraryLocked() error {
+	meta := &libraryIndexFile{
+		LoadedAt:   a.loadedAt,
+		LastError:  librarySourceErrors(a.librarySources),
+		Sources:    cloneLibrarySources(a.librarySources),
+		Hongguo:    cloneHongguoCatalogState(a.libraryApp),
+		Catalog:    cloneProviderCatalog(a.libraryProviders),
+	}
+	err := a.appLibrary().Persist(a.cfg.dataDirectory(), meta)
+	if err != nil {
+		a.libraryError = strings.TrimSpace(meta.LastError + "\n剧库缓存保存失败: " + a.redactError(err))
+		a.libraryRevision++
+	}
+	return err
+}
+
 func (a *UIApp) librarySnapshotLocked(revision uint64) map[string]any {
-	remaining := sortMetadataRemaining(a.dramas)
+	indexDramas := a.libraryIndexDramas()
+	remaining := sortMetadataRemaining(indexDramas)
 	var unqueued []Drama
-	for _, drama := range a.dramas {
+	for _, drama := range indexDramas {
 		if !a.metadataPending[drama.ID] {
 			unqueued = append(unqueued, drama)
 		}
@@ -377,14 +376,14 @@ func (a *UIApp) librarySnapshotLocked(revision uint64) map[string]any {
 	response := map[string]any{
 		"revision": a.libraryRevision, "loadedAt": a.loadedAt, "loading": a.libraryLoading != nil,
 		"cached": a.librarySaved && !a.libraryDirty, "error": a.libraryError,
-		"sources": cloneLibrarySources(a.librarySources), "total": len(a.dramas),
+		"sources": cloneLibrarySources(a.librarySources), "total": a.libraryLen(),
 		"hasMore": more[""], "hasMoreBySource": more, "metadataRemaining": remaining,
 		"loadingMore": a.libraryMore && a.libraryLoading != nil, "loadingSource": a.libraryLoadingSource, "loadingPhase": a.libraryLoadingPhase, "metadata": a.libraryMetadata,
 	}
 	if revision != 0 && revision == a.libraryRevision {
 		response["unchanged"] = true
 	} else {
-		response["data"] = append([]Drama{}, a.dramas...)
+		response["data"] = indexDramas
 	}
 	return response
 }

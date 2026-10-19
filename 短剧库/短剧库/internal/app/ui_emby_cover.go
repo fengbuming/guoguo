@@ -52,14 +52,10 @@ func embyCoverURL(drama Drama, base string, key []byte, owner string) string {
 
 func (app *UIApp) embyCoverSource(id string) string {
 	app.mu.Lock()
-	for _, drama := range app.dramas {
-		if drama.ID == id {
-			remote := embyDramaCover(drama)
-			if remote != "" {
-				app.mu.Unlock()
-				return remote
-			}
-			break
+	if drama, found := app.libraryDrama(id); found {
+		if remote := embyDramaCover(drama); remote != "" {
+			app.mu.Unlock()
+			return remote
 		}
 	}
 	app.mu.Unlock()

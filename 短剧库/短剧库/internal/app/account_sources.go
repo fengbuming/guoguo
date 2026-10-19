@@ -151,8 +151,8 @@ func (app *UIApp) dramaSourcesAllowedLocked(ctx context.Context, ids []string) b
 		}
 		wanted[id] = true
 	}
-	for _, drama := range app.dramas {
-		if wanted[drama.ID] && !dramaAllowed(ctx, drama.ID, drama.Source) {
+	for _, entry := range app.libraryEntries() {
+		if wanted[entry.ID] && !dramaAllowed(ctx, entry.ID, entry.Source) {
 			return false
 		}
 	}
@@ -199,7 +199,7 @@ func (app *UIApp) librarySnapshotForSourceLocked(ctx context.Context, revision u
 	}
 	response := app.librarySnapshotLocked(0)
 	dramas := make([]Drama, 0)
-	for _, drama := range app.dramas {
+	for _, drama := range app.libraryIndexDramas() {
 		if dramaAllowed(ctx, drama.ID, drama.Source) {
 			dramas = append(dramas, drama)
 		}
@@ -263,12 +263,13 @@ func (app *UIApp) imageSource(ctx context.Context, remote string) (string, bool)
 func (app *UIApp) imageTarget(ctx context.Context, id, remote string) (string, string, bool) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	for _, drama := range app.dramas {
-		if id != "" && drama.ID != id || !dramaAllowed(ctx, drama.ID, drama.Source) {
+	// 封面走索引条目即可：条目里的 Cover 已是归一化地址，coverPathFromAny 能还原原始地址
+	for _, entry := range app.libraryEntries() {
+		if id != "" && entry.ID != id || !dramaAllowed(ctx, entry.ID, entry.Source) {
 			continue
 		}
-		if address, valid := buildImageURL(bestDramaCover(drama)); valid && (id != "" || address == remote) {
-			return dramaProvider(drama), address, true
+		if address, valid := buildImageURL(coverPathFromAny(entry.Cover)); valid && (id != "" || address == remote) {
+			return entryProvider(entry), address, true
 		}
 	}
 	return "", "", false

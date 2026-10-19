@@ -76,9 +76,9 @@ func (a *UIApp) acceptRankingDramas(page rankingPage) {
 	a.normalizeDramaCovers(fresh)
 	newDramas := a.newSortMetadataDramasLocked(fresh)
 	if page.Stale {
-		a.dramas = mergeLoadedDramas(fresh, a.dramas, nil)
+		a.libraryMergeKeep(fresh)
 	} else {
-		a.dramas = mergeLoadedDramas(a.dramas, fresh, nil)
+		a.libraryMerge(fresh)
 	}
 	a.enqueueSortMetadataLocked(newDramas, false)
 	if a.librarySources == nil {
@@ -87,8 +87,8 @@ func (a *UIApp) acceptRankingDramas(page rankingPage) {
 	source := dramaProvider(fresh[0])
 	state := a.librarySources[source]
 	state.Count = 0
-	for _, drama := range a.dramas {
-		if dramaProvider(drama) == source {
+	for _, entry := range a.libraryEntries() {
+		if entryProvider(entry) == source {
 			state.Count++
 		}
 	}

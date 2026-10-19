@@ -25,7 +25,7 @@ func TestEmbyExportPersistentSignedLinksAndSafeArchive(t *testing.T) {
 	id := "hongguo:7000000000000000001"
 	chapters := []Chapter{{ID: id + ":1", Source: sourceHongguo, Title: "第一集"}, {ID: id + ":2", Source: sourceHongguo, Title: "第二集"}}
 	d.hongguoClient().details["7000000000000000001"] = hongguoDetailEntry{Drama: Drama{ID: id, Title: "../测试剧 <&>"}, Chapters: chapters, ExpiresAt: time.Now().Add(time.Minute)}
-	app := &UIApp{downloader: d, cfg: d.cfg, dramas: []Drama{{ID: id, Source: sourceHongguo, Title: "测试", Desc: "纯文字 <简介>"}}}
+	app := &UIApp{downloader: d, cfg: d.cfg, library: newLibraryStoreWith([]Drama{{ID: id, Source: sourceHongguo, Title: "测试", Desc: "纯文字 <简介>"}})}
 	body, _ := json.Marshal(map[string]string{"dramaId": id, "baseUrl": "http://library.test:8998"})
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/emby/export", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
