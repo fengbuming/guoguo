@@ -52,7 +52,7 @@
 ## VPS 线上部署（111.91.25.138 / Debian 12 / 2C 800MB / 40GB，已上线）
 
 - 形态：裸二进制 + systemd。二进制 `/opt/juku/bin/juku`，数据 `/opt/juku/data`，单元 `/etc/systemd/system/juku.service`（TZ=Asia/Shanghai、Restart=always、LimitNOFILE=65535）。
-- ExecStart：`-ui -listen 0.0.0.0:8998 -open=false -data-dir /opt/juku/data -ffmpeg /usr/bin/ffmpeg`（ffmpeg 用 apt 装，5.1.9）。访问 http://111.91.25.138:8998 。
+- ExecStart 曾临时改为 `-listen 127.0.0.1:8998` 走 SSH 隧道，但用户随后要求恢复公网直连（白名单未就绪），现为 `-listen 0.0.0.0:8998`（可 sed 切换，改完 daemon-reload + restart）。`-open=false -data-dir /opt/juku/data -ffmpeg /usr/bin/ffmpeg`（ffmpeg 用 apt 装，5.1.9）。**公网已不开放**，用 SSH 隧道访问：`ssh -L 8998:127.0.0.1:8998 root@111.91.25.138` 后开 http://127.0.0.1:8998 。
 - 编译：改 ALWAYS 用 `git worktree` 检出目标提交的干净副本再交叉编译（`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 -trimpath -ldflags="-s -w"`），避免把当前分支 WIP 编进去。
 - admin 初始化只能在首启：`timeout 40 ./bin/juku -listen 127.0.0.1:8998 -admin-password xxx` 生成 `accounts.json` 后杀掉，再交给 systemd；不要写进 unit 文件。
 - 库迁移：master 的 `libraryCache`（dramas/loadedAt/lastError/sources/hongguoApp/providerCatalog）与现有 library.json 对齐，gzip 上传即生效。**不迁移** accounts.json、viewer-key、juku.json、ui-state.json、huangguo-session.json。
@@ -68,3 +68,7 @@
 - 前端 `main.js` 的 `if (app.account.init()) return;` 使登录页模式下**跳过整个主应用初始化**（剧库/下载/追剧/历史/排行榜/设置均不加载）；CSS `.account-page` 隐藏 workspace 与导航，只留登录面板。
 - 遗留放行面：`/assets/**`（登录页依赖）与 `/api/emby/*`（`withAccountAccess` 无条件放行）—— 启用 Emby 集成后后者即成免登录入口，需另行处理。
 - 管理端点两个坑：POST 前重新 `GET /api/ui/viewer` 取 id（登录后 viewer 变更，旧 id 会 409 `viewer_changed`）；POST 必须带 `X-Juku-Viewer` 头，否则 403。匿名首次 viewer 返回 `{"ready":false}`，需二次调用才有 id。
+- **改密码不要手改文件**：用 `POST /api/ui/account/password {password,newPassword}`，免停服且会自动吊销该账号全部旧会话。
+- 安全审计已做（无后门）：注册双重校验、`withAccountAccess` 全覆盖、无硬编码绕过；限速 10 次/分钟/用户名。遗留面只有 `/assets/**`（公开，约 700KB/次匿名访问）与 `/api/emby/*`（本实例 403 不可达）。
+- 运维坑：paramiko `sftp.put` 偶发 ENOENT，改系统文件用 shell heredoc；`ss` 全网卡显示为 `*:8998`，校验监听范围别 grep `0.0.0.0:8998`。
+- VPS 上还跑着 nginx 1.22.1 + Hysteria2 订阅服务（占 443/80 default_server）与一张 6 天期 LE IP 证书；全机无 ufw/iptables 规则。改动 nginx 前注意别影响订阅服务。
