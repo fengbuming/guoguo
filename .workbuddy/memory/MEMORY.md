@@ -27,7 +27,10 @@
 - 热路径（列表/搜索/排序/统计/封面代理/排行榜/推荐合并）只读索引，零磁盘 IO；索引含 desc/intro（前端本地搜索要用）与单份封面。
 - 保真要点：`drama()` 在有完整记录时以记录为准回填封面与集数（否则 DeepEqual 测试失败）；`applyEntry` **不要**写 Cover/EpisodeCount；`canonicalDramaCover` 无封面时保持 nil 别转成 ""。
 - 旧整文件 `library.json` 首次启动自动迁移，之后不再解析（不删，留作回滚）。`readLibraryCache` 改为优先读分片剧库；CLI 刷新会同步写回分片。
-- 实测（27,722 部）：索引常驻 51.5 MiB vs 全量 74.2 MiB；进程空闲 RSS **177.8 → 136.4 MB**；`/api/ui/dramas` 0.24s→0.20s（载荷 50.7→48.1MB，略快）。峰值仍高（整库 JSON 一次性编码，Go 不立刻还内存）。
+- 列表响应**必须流式写**：`json.Encoder.Encode` 会先把整个值编进缓冲区再写，整库列表每次多占 ~68MB，且 Go 不立刻还内存（实测请求后 RSS 423MB 且 3 分钟不回落）。用 `writeLibrarySnapshot` 逐条编码 + 8KB 分块写；快照返回的条目必须是副本（编码发生在释放 a.mu 之后）。
+- 简介去重：23,578/27,722 部剧 intro==desc，索引只在两者不同时存 intro，`entryIntro` 读回时补；列表里 intro 用 omitempty 不重复输出。
+- 实测（27,722 部）：常驻堆 74.2 → **19.7 MiB**；空闲 RSS 177.8 → **109.4 MB**；6 次整库请求后峰值 423.6 → **256.6 MB**；`/api/ui/dramas` 50.7MB/0.242s → **28.7MB/0.186s**。
+- 剩余大头：每次列表请求仍复制 10.4MB 条目切片；再要降需把 entries 改成写时复制（不可变快照）。
 
 ## 启动方式 / 环境
 - 局域网：**不带** -listen（默认 0.0.0.0）+ `-open=false`，必须后台启动。日志显示 127.0.0.1 是 publicURL() 展示逻辑。
@@ -45,3 +48,23 @@
 - 1080p 竖屏 4.25Mbit/s → 1.53GB/观看小时；30Mbps ≈5–6 路；1024GB/月 ≈670 观看小时。
 - 结论：2 核富余、1GiB 可用（+2GB swap，首选裸二进制 + systemd，Docker 在 1GiB 偏紧）、40GB 宽裕。
 - 灌流复现：viewer GET 两次拿 id → POST `/api/ui/playback/open` → GET `/api/ui/playback/stream?session=&episode=N&start=0&quality=0&version=0&remux=0`。
+
+## VPS 线上部署（111.91.25.138 / Debian 12 / 2C 800MB / 40GB，已上线）
+
+- 形态：裸二进制 + systemd。二进制 `/opt/juku/bin/juku`，数据 `/opt/juku/data`，单元 `/etc/systemd/system/juku.service`（TZ=Asia/Shanghai、Restart=always、LimitNOFILE=65535）。
+- ExecStart：`-ui -listen 0.0.0.0:8998 -open=false -data-dir /opt/juku/data -ffmpeg /usr/bin/ffmpeg`（ffmpeg 用 apt 装，5.1.9）。访问 http://111.91.25.138:8998 。
+- 编译：改 ALWAYS 用 `git worktree` 检出目标提交的干净副本再交叉编译（`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 -trimpath -ldflags="-s -w"`），避免把当前分支 WIP 编进去。
+- admin 初始化只能在首启：`timeout 40 ./bin/juku -listen 127.0.0.1:8998 -admin-password xxx` 生成 `accounts.json` 后杀掉，再交给 systemd；不要写进 unit 文件。
+- 库迁移：master 的 `libraryCache`（dramas/loadedAt/lastError/sources/hongguoApp/providerCatalog）与现有 library.json 对齐，gzip 上传即生效。**不迁移** accounts.json、viewer-key、juku.json、ui-state.json、huangguo-session.json。
+- 挪机注意 swap：`vm.swappiness=0` 会让已有 swap 完全不工作，须写 `/etc/sysctl.d/99-juku.conf` 设 10 并 `sysctl -w`。
+- **容量修正**：播放期 RSS 可达 477MB（封装缓存默认 512MB），远大于本机空闲实测的 106–186MB；800MB 机器仅稳撑 1 路，需在管理后台下调 cacheMB 至 128–192、maxSessions 2、maxRemuxJobs 1。
+- 检索接口参数是 `q` 而非 `keyword`；响应 `{data,limited,query,saved,source,total,warning}`，`limited:true` 为分页截断。
+- 本机无 sshpass/rsync，自动化 SSH 用 Python paramiko（脚本见 `%TEMP%\juku-deploy\ssh_helper.py` / `deploy.py` / `verify.py` / `enable_login.py`）。
+
+## 访问控制（已在线上启用）
+
+- **必须登录 / 关闭注册 / 登录页前置是程序内建能力，不需要改代码**：管理员 POST `/api/ui/admin/settings` `{requireLogin, allowRegistration}`，持久化在 `data/accounts.json`，重启保持；面板入口在「用户/账号」页（`users.js`）。
+- 生效后：匿名 `/` → 302 `/login`；所有 `/api/ui/*` → 401 `login_required`；注册 → 403 `registration_disabled`；`GET /api/ui/viewer` 下发策略供前端判断。
+- 前端 `main.js` 的 `if (app.account.init()) return;` 使登录页模式下**跳过整个主应用初始化**（剧库/下载/追剧/历史/排行榜/设置均不加载）；CSS `.account-page` 隐藏 workspace 与导航，只留登录面板。
+- 遗留放行面：`/assets/**`（登录页依赖）与 `/api/emby/*`（`withAccountAccess` 无条件放行）—— 启用 Emby 集成后后者即成免登录入口，需另行处理。
+- 管理端点两个坑：POST 前重新 `GET /api/ui/viewer` 取 id（登录后 viewer 变更，旧 id 会 409 `viewer_changed`）；POST 必须带 `X-Juku-Viewer` 头，否则 403。匿名首次 viewer 返回 `{"ready":false}`，需二次调用才有 id。
