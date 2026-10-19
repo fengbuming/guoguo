@@ -193,15 +193,17 @@ func (app *UIApp) taskViewsForSourceLocked(ctx context.Context) []uiTaskView {
 	return result
 }
 
-func (app *UIApp) librarySnapshotForSourceLocked(ctx context.Context, revision uint64) map[string]any {
+// librarySnapshotForSourceLocked 返回快照头字段与索引条目，语义同 librarySnapshotLocked，
+// 但按账号站源权限过滤条目（过滤在条目上完成，不展开成 []Drama）。
+func (app *UIApp) librarySnapshotForSourceLocked(ctx context.Context, revision uint64) (map[string]any, []dramaEntry) {
 	if !sourceScopeRestricted(ctx) {
 		return app.librarySnapshotLocked(revision)
 	}
-	response := app.librarySnapshotLocked(0)
-	dramas := make([]Drama, 0)
-	for _, drama := range app.libraryIndexDramas() {
-		if dramaAllowed(ctx, drama.ID, drama.Source) {
-			dramas = append(dramas, drama)
+	response, _ := app.librarySnapshotLocked(0)
+	var selected []dramaEntry
+	for _, entry := range app.libraryEntries() {
+		if dramaAllowed(ctx, entry.ID, entry.Source) {
+			selected = append(selected, entry)
 		}
 	}
 	sources := map[string]librarySourceState{}
@@ -212,7 +214,7 @@ func (app *UIApp) librarySnapshotForSourceLocked(ctx context.Context, revision u
 			loading = loading || state.Status == "loading"
 		}
 	}
-	remaining := sortMetadataRemaining(dramas)
+	remaining := sortMetadataRemainingEntries(selected)
 	for source := range remaining {
 		if source != "" && !sourceAllowed(ctx, source) {
 			delete(remaining, source)
@@ -236,7 +238,7 @@ func (app *UIApp) librarySnapshotForSourceLocked(ctx context.Context, revision u
 			more[""] = more[""] || value
 		}
 	}
-	response["data"], response["total"], response["sources"], response["error"] = dramas, len(dramas), sources, librarySourceErrors(sources)
+	response["total"], response["sources"], response["error"] = len(selected), sources, librarySourceErrors(sources)
 	response["loading"], response["loadingMore"] = loading, loading && app.libraryMore
 	response["loadingSource"] = ""
 	response["loadingPhase"] = ""
@@ -246,13 +248,13 @@ func (app *UIApp) librarySnapshotForSourceLocked(ctx context.Context, revision u
 	}
 	response["metadataRemaining"], response["hasMoreBySource"], response["hasMore"] = remaining, more, more[""]
 	pending := 0
-	for _, drama := range dramas {
-		if app.metadataPending[drama.ID] {
+	for i := range selected {
+		if app.metadataPending[selected[i].ID] {
 			pending++
 		}
 	}
 	response["metadata"] = map[string]any{"running": pending > 0, "checked": 0, "total": pending, "updated": 0, "failed": 0}
-	return response
+	return response, selected
 }
 
 func (app *UIApp) imageSource(ctx context.Context, remote string) (string, bool) {

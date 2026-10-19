@@ -121,7 +121,7 @@ func TestManualBackfillPersistsPartialResultsAndContinuesAfterCatalogEnd(t *test
 	if calls.Load() != 0 {
 		t.Fatal("ordinary library reads must not backfill")
 	}
-	before := a.librarySnapshotLocked(0)
+	before, _ := a.librarySnapshotLocked(0)
 	if before["hasMoreBySource"].(map[string]bool)[sourceHongguo] != true {
 		t.Fatal("backfill must remain available after the catalog is exhausted")
 	}

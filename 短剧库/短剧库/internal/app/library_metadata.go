@@ -139,6 +139,47 @@ func selectSortMetadataBatch(dramas []Drama, source string, priority []string, n
 	return candidates
 }
 
+// needsSortMetadataEntry 与 needsSortMetadata 等价，但直接读索引条目，
+// 避免为了统计而把整库展开成 []Drama（每部 720 字节的临时分配）。
+func needsSortMetadataEntry(entry dramaEntry) bool {
+	source := entryProvider(entry)
+	switch source {
+	case sourceHongguo, sourceHuangdou, sourceHuangguoAI, sourceHuangguoVideo, sourceHuangju, sourceYeguo, sourceDSD:
+	default:
+		return false
+	}
+	if entry.SortMetadata == nil {
+		return true
+	}
+	version := sortMetadataVersion
+	if source == sourceHuangguoAI {
+		version = huangguoMetadataVersion
+	}
+	if entry.SortMetadata.Version != version {
+		return true
+	}
+	if source == sourceHongguo && coverString(entry.Cover) == "" && !entry.SortMetadata.CoverChecked {
+		return true
+	}
+	return source == sourceHuangdou && entry.VIP == nil && !entry.SortMetadata.VIPChecked
+}
+
+func sortMetadataRemainingEntries(entries []dramaEntry) map[string]int {
+	counts := map[string]int{"": 0, "hongguo": 0, "huangdou": 0, "huangguo": 0}
+	for i := range entries {
+		if !needsSortMetadataEntry(entries[i]) {
+			continue
+		}
+		source := entryProvider(entries[i])
+		if source == sourceHuangguoAI || source == sourceHuangguoVideo {
+			source = "huangguo"
+		}
+		counts[source]++
+		counts[""]++
+	}
+	return counts
+}
+
 func sortMetadataRemaining(dramas []Drama) map[string]int {
 	counts := map[string]int{"": 0, "hongguo": 0, "huangdou": 0, "huangguo": 0}
 	for _, drama := range dramas {

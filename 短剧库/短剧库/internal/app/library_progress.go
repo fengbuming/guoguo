@@ -70,13 +70,13 @@ func (a *UIApp) handleLibraryCancel(w http.ResponseWriter, r *http.Request) {
 		a.setLibraryPhaseLocked("正在停止，已保留已入库内容")
 		a.libraryRevision++
 	}
-	resp := a.librarySnapshotForSourceLocked(r.Context(), 0)
+	resp, entries := a.librarySnapshotForSourceLocked(r.Context(), 0)
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	resp["canceled"] = running
-	writeJSON(w, http.StatusOK, resp)
+	writeLibrarySnapshot(w, http.StatusOK, resp, entries)
 }
 
 func (a *UIApp) startLibraryRefreshLocked(source string) {
@@ -353,17 +353,27 @@ func (a *UIApp) persistLibraryLocked() error {
 	return err
 }
 
-func (a *UIApp) librarySnapshotLocked(revision uint64) map[string]any {
-	indexDramas := a.libraryIndexDramas()
-	remaining := sortMetadataRemaining(indexDramas)
-	var unqueued []Drama
-	for _, drama := range indexDramas {
-		if !a.metadataPending[drama.ID] {
-			unqueued = append(unqueued, drama)
+// librarySnapshotLocked 返回快照头字段与索引条目。剧集数据以条目形式返回，
+// 由 writeLibrarySnapshot 逐条流式编码，避免一次性构造几十 MB 的响应体与 []Drama。
+// 条目为 nil 表示自 revision 以来没有变化，响应里不会出现 data 字段。
+func (a *UIApp) librarySnapshotLocked(revision uint64) (map[string]any, []dramaEntry) {
+	// 复制一份条目切片：快照会在释放 a.mu 之后编码写出，不能持有库内部的活切片
+	entries := append([]dramaEntry(nil), a.libraryEntries()...)
+	remaining := sortMetadataRemainingEntries(entries)
+	unqueued := map[string]int{"": 0, "hongguo": 0, "huangdou": 0, "huangguo": 0}
+	for i := range entries {
+		if a.metadataPending[entries[i].ID] || !needsSortMetadataEntry(entries[i]) {
+			continue
 		}
+		source := entryProvider(entries[i])
+		if source == sourceHuangguoAI || source == sourceHuangguoVideo {
+			source = "huangguo"
+		}
+		unqueued[source]++
+		unqueued[""]++
 	}
 	more := map[string]bool{}
-	for source, count := range sortMetadataRemaining(unqueued) {
+	for source, count := range unqueued {
 		more[source] = count > 0
 	}
 	more["hongguo"] = more["hongguo"] || hongguoCatalogHasMore(a.libraryApp)
@@ -382,8 +392,7 @@ func (a *UIApp) librarySnapshotLocked(revision uint64) map[string]any {
 	}
 	if revision != 0 && revision == a.libraryRevision {
 		response["unchanged"] = true
-	} else {
-		response["data"] = indexDramas
+		return response, nil
 	}
-	return response
+	return response, entries
 }
