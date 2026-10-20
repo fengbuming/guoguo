@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -190,6 +191,8 @@ func (app *UIApp) serveLibrarySnapshot(writer http.ResponseWriter, request *http
 			return
 		}
 		path = rendered
+		// 渲染整库快照是单个请求里最大的一次分配，渲完立刻把空闲页还给系统。
+		app.releaseRuntimeMemory()
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -237,15 +240,19 @@ func writeLibraryObjectJSON(chunk *writeJSONChunkWriter, fields map[string]any, 
 		chunk.byte(',')
 	}
 	chunk.string(`"data":[`)
+	// 逐条 json.Marshal 会给每部剧都新申请一块缓冲（整库两万多条 ≈ 每次请求 28MB 垃圾）。
+	// 复用一个 Encoder + 一个 bytes.Buffer：Encode 输出与 Marshal 逐字节相同，只多一个换行。
+	var scratch bytes.Buffer
+	encoder := json.NewEncoder(&scratch)
 	for index := range entries {
 		if index > 0 {
 			chunk.byte(',')
 		}
-		body, err := json.Marshal(&entries[index])
-		if err != nil {
+		scratch.Reset()
+		if err := encoder.Encode(&entries[index]); err != nil {
 			continue
 		}
-		chunk.bytes(body)
+		chunk.bytes(bytes.TrimSuffix(scratch.Bytes(), []byte("\n")))
 	}
 	chunk.string(`]}`)
 }

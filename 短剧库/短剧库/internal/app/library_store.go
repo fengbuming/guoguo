@@ -24,6 +24,10 @@ type libraryStore struct {
 	entries []dramaEntry
 	byID    map[string]int
 	order   []int // entries 的下标顺序，保持与写入顺序一致
+	// published 是给读路径共享的不可变条目快照；库变更后第一次读取时才复制一次。
+	published      []dramaEntry
+	publishedDirty bool
+	publishedAt    time.Time
 
 	shardMu   sync.Mutex
 	shards    map[uint16]*libraryShard
@@ -124,6 +128,7 @@ func (s *libraryStore) importDramas(dramas []Drama) {
 	}
 	s.mu.Lock()
 	s.entries, s.byID = entries, byID
+	s.entriesChangedLocked()
 	s.mu.Unlock()
 
 	s.shardMu.Lock()
@@ -241,10 +246,36 @@ func (s *libraryStore) Len() int {
 }
 
 // Entries 返回只读索引切片，调用方持有的锁需覆盖使用期（与既有 a.mu 语义一致）。
+// Entries 返回共享的只读条目快照。
+//
+// 快照写时复制：库变更后第一次读取才复制一次，之后所有请求共用同一份。
+// 调用方只能读，不能就地排序或修改（要改自己复制）。
 func (s *libraryStore) Entries() []dramaEntry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.entries
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.publishedDirty || s.published == nil && len(s.entries) > 0 {
+		published := make([]dramaEntry, len(s.entries))
+		copy(published, s.entries)
+		s.published, s.publishedDirty, s.publishedAt = published, false, time.Now()
+	}
+	return s.published
+}
+
+// dropIdlePublished 丢掉闲置的共享快照，让空闲期常驻内存回到只含索引的水平。
+// 下一次列表请求会重建一次（10MB 级），并发突发仍然共享同一份。
+func (s *libraryStore) dropIdlePublished(idle time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.published == nil || time.Since(s.publishedAt) < idle {
+		return false
+	}
+	s.published, s.publishedDirty = nil, true
+	return true
+}
+
+// entriesChangedLocked 标记共享快照失效；调用方必须持有 s.mu 写锁。
+func (s *libraryStore) entriesChangedLocked() {
+	s.publishedDirty = true
 }
 
 // Entry 返回单条索引，found 为 false 表示不存在。
@@ -373,6 +404,7 @@ func (s *libraryStore) upsert(dramas []Drama, existingWins bool) {
 			s.entries = append(s.entries, entry)
 		}
 	}
+	s.entriesChangedLocked()
 	s.mu.Unlock()
 }
 
@@ -401,6 +433,7 @@ func (s *libraryStore) Update(id string, fn func(*Drama) bool) bool {
 	if position, exists := s.byID[id]; exists {
 		s.entries[position] = newDramaEntry(full)
 	}
+	s.entriesChangedLocked()
 	s.mu.Unlock()
 	return true
 }
@@ -415,6 +448,7 @@ func (s *libraryStore) SortByTitle() {
 	for index := range s.entries {
 		s.byID[s.entries[index].ID] = index
 	}
+	s.entriesChangedLocked()
 	s.mu.Unlock()
 	s.shardMu.Lock()
 	s.dirtyMeta = true
@@ -438,6 +472,7 @@ func (s *libraryStore) UpdateEntries(ids []string, fn func(*dramaEntry) bool) {
 		}
 		shards[s.entries[position].Shard] = true
 	}
+	s.entriesChangedLocked()
 	s.mu.Unlock()
 	if len(shards) == 0 {
 		return
@@ -472,6 +507,7 @@ func (s *libraryStore) Remove(ids []string) {
 		remaining = append(remaining, entry)
 	}
 	s.entries, s.byID = remaining, byID
+	s.entriesChangedLocked()
 	s.mu.Unlock()
 
 	s.shardMu.Lock()

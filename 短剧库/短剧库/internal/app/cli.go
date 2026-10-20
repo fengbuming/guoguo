@@ -110,6 +110,7 @@ func usage() {
 }
 
 func Run() {
+	configureProcessMemory()
 	mode := flag.String("mode", "all", "all/search/id/list")
 	keyword := flag.String("keyword", "", "search keyword")
 	id := flag.String("id", "", "drama id")

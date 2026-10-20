@@ -36,6 +36,9 @@ type UIApp struct {
 	downloader             *Downloader
 	cfg                    Config
 	mu                     sync.Mutex
+	memoryReleaseMu        sync.Mutex
+	memoryReleaseTimer     *time.Timer
+	memoryShrinkTimer      *time.Timer
 	library                *libraryStore
 	selected               map[string]bool
 	tasks                  map[string]*UITask
@@ -793,6 +796,11 @@ func (a *UIApp) handleDramas(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Unlock()
 	a.serveLibrarySnapshot(w, r, resp, entries)
+	if len(entries) >= 1000 {
+		// 整库列表会瞬间造出几十 MB 临时对象；写完就把空闲页还回去，
+		// 否则小内存机器要等 Go 的渐进式 scavenger 慢慢降，期间容易被 OOM。
+		a.releaseRuntimeMemory()
+	}
 }
 
 func (a *UIApp) handleCategories(w http.ResponseWriter, r *http.Request) {

@@ -357,8 +357,9 @@ func (a *UIApp) persistLibraryLocked() error {
 // 由 writeLibrarySnapshot 逐条流式编码，避免一次性构造几十 MB 的响应体与 []Drama。
 // 条目为 nil 表示自 revision 以来没有变化，响应里不会出现 data 字段。
 func (a *UIApp) librarySnapshotLocked(revision uint64) (map[string]any, []dramaEntry) {
-	// 复制一份条目切片：快照会在释放 a.mu 之后编码写出，不能持有库内部的活切片
-	entries := append([]dramaEntry(nil), a.libraryEntries()...)
+	// 条目切片由剧库写时复制共享，快照在释放 a.mu 之后编码也只读不改；
+	// 不再每次请求复制 10MB（27k 部 ≈ 10.4MB/请求）。
+	entries := a.libraryEntries()
 	remaining := sortMetadataRemainingEntries(entries)
 	unqueued := map[string]int{"": 0, "hongguo": 0, "huangdou": 0, "huangguo": 0}
 	for i := range entries {

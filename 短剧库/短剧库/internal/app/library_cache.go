@@ -177,6 +177,9 @@ func (a *UIApp) loadLibrary() {
 		a.enqueueSortMetadataLocked(pending, false)
 		fmt.Printf("已恢复本地剧库：%d 部，索引：%s\n", a.libraryLen(), libraryIndexPath(a.cfg.dataDirectory()))
 	}
+	// 冷启动解析 index.json 是进程生命周期里最大的一次分配峰值，解析完立刻还给系统，
+	// 否则空闲 RSS 会一直停在峰值附近。
+	a.releaseRuntimeMemory()
 }
 
 func (d *Downloader) GetAllDramas(ctx context.Context) ([]Drama, error) {
