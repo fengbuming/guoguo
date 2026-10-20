@@ -183,6 +183,19 @@ func TestPlaybackGeneratedInitializationPathMatchesPlaylist(t *testing.T) {
 	}
 }
 
+// waitPlaybackGenerated 等封装收尾（首帧后仍在后台跑），便于断言完整索引。
+func waitPlaybackGenerated(t *testing.T, generated *playbackGenerated) {
+	t.Helper()
+	select {
+	case <-generated.done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("媒体封装未在预期时间内收尾")
+	}
+	if generated.result != nil {
+		t.Fatal(generated.result)
+	}
+}
+
 func TestPlaybackGeneratedPreservesLongGOPAndAudioOnlyVideo(t *testing.T) {
 	app, fixture := nativePlaybackFixture(t, "10", "320x180")
 	ffmpeg := app.downloader.cfg.FFmpeg
@@ -215,6 +228,8 @@ func TestPlaybackGeneratedPreservesLongGOPAndAudioOnlyVideo(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer media.Close()
+			// generatePlayback 首个分片落盘就返回，等封装收尾后再校验完整索引。
+			waitPlaybackGenerated(t, media.generated)
 			stop()
 			if media.generated.ctx.Err() != nil {
 				t.Fatal("completed media inherited its preparation timeout")

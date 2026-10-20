@@ -276,6 +276,7 @@ func TestEmbyEvictedRemuxRestoresExistingSegmentURLs(t *testing.T) {
 	if err := app.generatePlayback(ctx, media, "remux", base, parsed.RawQuery); err != nil {
 		t.Fatal(err)
 	}
+	waitPlaybackGenerated(t, media.generated)
 	segment := media.generated.assetURL(media.generated.segments[0].Name)
 	before := embyRequest(app, http.MethodGet, segment)
 	if before.Code != 200 {
