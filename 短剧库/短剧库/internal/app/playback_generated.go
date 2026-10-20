@@ -343,7 +343,7 @@ func (generated *playbackGenerated) progressivePlaylist() string {
 	}
 	lines := strings.Split(string(body), "\n")
 	out := make([]string, 0, len(lines)+1)
-	started := false
+	started, typed := false, false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
@@ -358,14 +358,20 @@ func (generated *playbackGenerated) progressivePlaylist() string {
 			continue
 		case strings.HasPrefix(trimmed, "#EXT-X-PLAYLIST-TYPE:"):
 			// ffmpeg 一直写 VOD；未写完就声明 VOD 会让播放器按点播处理、不再轮询。
-			trimmed = "#EXT-X-PLAYLIST-TYPE:EVENT"
+			trimmed, typed = "#EXT-X-PLAYLIST-TYPE:EVENT", true
 		case !strings.HasPrefix(trimmed, "#"):
 			if !validPlaybackSegmentName(trimmed) {
 				continue
 			}
 			trimmed = generated.assetURL(trimmed)
 		case !started && strings.HasPrefix(trimmed, "#EXT-X-TARGETDURATION:"):
-			out = append(out, trimmed, "#EXT-X-START:TIME-OFFSET=0")
+			out = append(out, trimmed)
+			if !typed {
+				// 清单里没有 PLAYLIST-TYPE 时显式补一个，避免"无 ENDLIST 又无类型"的歧义。
+				out = append(out, "#EXT-X-PLAYLIST-TYPE:EVENT")
+				typed = true
+			}
+			out = append(out, "#EXT-X-START:TIME-OFFSET=0")
 			started = true
 			continue
 		}
@@ -403,17 +409,20 @@ func (generated *playbackGenerated) Close() {
 
 func (generated *playbackGenerated) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	generated.mu.RLock()
-	defer generated.mu.RUnlock()
-	if generated.ctx.Err() != nil || generated.failed {
+	closed := generated.ctx.Err() != nil || generated.failed
+	playlist := generated.playlist
+	generated.mu.RUnlock()
+	if closed {
 		writer.WriteHeader(http.StatusGone)
 		return
 	}
 	name := strings.TrimPrefix(request.URL.Path, generated.base)
 	if name == "index.m3u8" {
-		text := generated.playlist
+		text := playlist
 		if text == "" {
-			// 还在生成：给一份此刻可播的清单，播放器边下边播。
-			text = generated.progressivePlaylist()
+			// 还在生成：等首个分片落盘再给清单。plan 早就返回了，播放器拉清单
+			// 这一步替它阻塞，总比丢一份空清单让它反复重试强。
+			text = generated.playlistWhenReady(request.Context())
 		}
 		if text == "" {
 			text = playbackGeneratedEmptyPlaylist
@@ -423,7 +432,10 @@ func (generated *playbackGenerated) ServeHTTP(writer http.ResponseWriter, reques
 		http.ServeContent(writer, request, name, time.Time{}, strings.NewReader(text))
 		return
 	}
-	if !generated.files[name] && !validPlaybackSegmentName(name) {
+	generated.mu.RLock()
+	known := generated.files[name]
+	generated.mu.RUnlock()
+	if !known && !validPlaybackSegmentName(name) {
 		// 渐进阶段 files 还没登记，只要名字合法就按文件是否存在决定。
 		http.NotFound(writer, request)
 		return
@@ -436,4 +448,33 @@ func (generated *playbackGenerated) ServeHTTP(writer http.ResponseWriter, reques
 	defer file.Close()
 	writer.Header().Set("Content-Type", "video/mp4")
 	http.ServeContent(writer, request, name, time.Time{}, file)
+}
+
+// playbackPlaylistWait 是清单请求为等首个分片最多阻塞的时长。
+// 要小于播放器的清单首字节超时（hls.js 默认 10s），又要盖住大多数源出首片的耗时。
+const playbackPlaylistWait = 6 * time.Second
+
+// playlistWhenReady 等到清单里出现分片为止；等不到就返回空串，交给空清单兜底。
+func (generated *playbackGenerated) playlistWhenReady(ctx context.Context) string {
+	deadline := time.Now().Add(playbackPlaylistWait)
+	for {
+		// 先看收尾后的正式清单，再看正在增长的清单，避免把已完成的当 live 交出去。
+		generated.mu.RLock()
+		done := generated.playlist
+		generated.mu.RUnlock()
+		if done != "" {
+			return done
+		}
+		if text := generated.progressivePlaylist(); text != "" {
+			return text
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
