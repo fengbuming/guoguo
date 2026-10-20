@@ -38,7 +38,8 @@
 
 - `data/playback-settings.json` 的 **`enabled` 是总开关**：默认 false → `/api/ui/playback/plan` 恒返回 `legacy/optimization_disabled` → 前端回落 `/stream` 的 libx264 全量转码。已在本机置 `enabled=true`。
 - **`directSources` 实测无效**：6 个源全加进去，`allowPlaybackDirect` 全部不通过（源站无 CORS / 需凭据），`redirect` 不可得；置空反而省掉每次 0.2–3.0s 探测。开启 enabled 后 huangdou/cloudfront/huangguoai/huangju 走**纯 Go 代理（hlsProxy），零 ffmpeg**。
-- 红果因 CENC 加密，`probePlaybackCodecs` 探测不出编码 → `video_codec_unsupported` → 回落 legacy **libx264 实时转码**，实测 **238.7% 单核 + 139.2MB RSS / 路**（2 核 VPS 一路即打满）。改进方向：给 CENC 源跳过探测、直接 `-c copy` 封装（`generatePlayback` 的 remux 路径）。
+- 红果因 CENC 加密，`probePlaybackCodecs` 探测不出编码 → 原先被判 `video_codec_unsupported` 回落 legacy **libx264 实时转码**，实测 **238.7% 单核 + 139.2MB RSS / 路**（2 核 VPS 一路即打满）。
+- **已改（2026-10-20，4a57978）**：`CENCKey` 非空时跳过探测，直接 `generatePlayback(processing="remux")` = 解密 + `-c copy`。实测同集 plan 0.67s 出 40 片 fMP4，CPU 约 0.08 核秒/集（原约 350），并发额度从 video(1) 换成 remux(2)。代价：首帧要等整集封装完（0.67–9.11s，看 CDN）。
 
 ## 启动方式 / 环境
 - 局域网：**不带** -listen（默认 0.0.0.0）+ `-open=false`，必须后台启动。日志显示 127.0.0.1 是 publicURL() 展示逻辑。
