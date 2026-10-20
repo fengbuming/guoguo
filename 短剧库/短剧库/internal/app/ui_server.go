@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -791,7 +792,7 @@ func (a *UIApp) handleDramas(w http.ResponseWriter, r *http.Request) {
 		resp["updateAccepted"] = updateAccepted
 	}
 	a.mu.Unlock()
-	writeLibrarySnapshot(w, http.StatusOK, resp, entries)
+	a.serveLibrarySnapshot(w, r, resp, entries)
 }
 
 func (a *UIApp) handleCategories(w http.ResponseWriter, r *http.Request) {
@@ -1915,36 +1916,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeLibrarySnapshot(w http.ResponseWriter, status int, fields map[string]any, entries []dramaEntry) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	writer := writeJSONChunkWriter{w: w}
-	writer.byte('{')
-	for key, value := range fields {
-		body, err := json.Marshal(value)
-		if err != nil {
-			return
-		}
-		writer.string(strconv.Quote(key))
-		writer.byte(':')
-		writer.bytes(body)
-		writer.byte(',')
-	}
-	writer.string(`"data":[`)
-	for index := range entries {
-		if index > 0 {
-			writer.byte(',')
-		}
-		body, err := json.Marshal(&entries[index])
-		if err != nil {
-			return
-		}
-		writer.bytes(body)
-	}
-	writer.string(`]}`)
-	writer.flush()
+	chunk := writeJSONChunkWriter{w: w}
+	writeLibraryObjectJSON(&chunk, fields, entries)
+	chunk.flush()
 }
 
 // writeJSONChunkWriter 忽略写入错误（连接断开时没有补救空间），只负责把分块写出去。
+// 目标可以是 http.ResponseWriter，也可以是 gzip 写入器（磁盘快照预渲染）。
 type writeJSONChunkWriter struct {
-	w       http.ResponseWriter
+	w       io.Writer
 	failed  bool
 	pending []byte
 }

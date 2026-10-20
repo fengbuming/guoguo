@@ -7,7 +7,14 @@ import (
 	"time"
 )
 
-const coverCacheLimit = 32 << 20
+// 封面内存缓存上限。
+//
+// 响应本身已经带 private, max-age=86400，重复访问由浏览器消化；服务端留 8 MiB
+// 只是为了让同一屏的并发请求合并（pending 去重）并少吃一次回源，再多就是纯浪费。
+const coverCacheLimit = 8 << 20
+
+// 缓存条目上限：平均一张封面约 40 KB，512 条会远超字节上限，实际由字节数主导。
+const coverCacheEntries = 256
 
 type coverCacheEntry struct {
 	data     []byte
@@ -111,7 +118,7 @@ func (cache *coverImageCache) store(key string, data []byte) {
 			delete(cache.entries, name)
 		}
 	}
-	for cache.size+len(data) > coverCacheLimit || len(cache.entries) >= 512 {
+	for cache.size+len(data) > coverCacheLimit || len(cache.entries) >= coverCacheEntries {
 		oldest := ""
 		var lastUsed time.Time
 		for name, entry := range cache.entries {
