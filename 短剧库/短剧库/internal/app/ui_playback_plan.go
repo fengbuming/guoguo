@@ -106,20 +106,31 @@ func (app *UIApp) planMedia(ctx context.Context, media *playbackMediaSession, cl
 		convert = true
 	}
 	if convert {
-		if err := app.probePlaybackCodecs(ctx, media); err != nil {
-			return err
-		}
-		if !playbackCodecAllowed(client.Video, media.info.Video) || media.info.Video == "" {
-			media.plan.Player, media.plan.Processing, media.plan.Reason = "legacy", "video", "video_codec_unsupported"
-			return nil
+		// CENC（红果）的编码信息在解密前读不出来，探测必然拿不到 codec，
+		// 一旦按「探测失败」处理就会退化成整集 libx264 重编码（实测 2.4 核 + 139MB）。
+		// 这类源只需要服务端解密 + 换封装，直接走 remux；产不出可播输出时
+		// generatePlayback 会返回 playbackOutputError，由下面的回落逻辑交给前端重试。
+		encrypted := len(media.media.CENCKey) > 0
+		if !encrypted {
+			if err := app.probePlaybackCodecs(ctx, media); err != nil {
+				return err
+			}
+			if !playbackCodecAllowed(client.Video, media.info.Video) || media.info.Video == "" {
+				media.plan.Player, media.plan.Processing, media.plan.Reason = "legacy", "video", "video_codec_unsupported"
+				return nil
+			}
 		}
 		processing := "remux"
 		media.plan.Reason = "container_compatibility"
-		if len(media.media.CENCKey) > 0 {
+		if encrypted {
 			media.plan.Reason = "server_decryption_required"
 		}
 		if mode == "audio" || !playbackCodecAllowed(client.Audio, media.info.Audio) {
 			processing, media.plan.Reason = "audio", "audio_codec_unsupported"
+			if encrypted {
+				// 加密流无法判断音频编码，保守起见只换封装、不重编码音轨。
+				processing, media.plan.Reason = "remux", "server_decryption_required"
+			}
 		}
 		if !client.NativeHLS && !client.HlsJS {
 			media.plan.Player, media.plan.Processing, media.plan.Reason = "legacy", "video", "hls_player_unavailable"
