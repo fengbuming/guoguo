@@ -31,6 +31,14 @@
 - 简介去重：23,578/27,722 部剧 intro==desc，索引只在两者不同时存 intro，`entryIntro` 读回时补；列表里 intro 用 omitempty 不重复输出。
 - 实测（27,722 部）：常驻堆 74.2 → **19.7 MiB**；空闲 RSS 177.8 → **109.4 MB**；6 次整库请求后峰值 423.6 → **256.6 MB**；`/api/ui/dramas` 50.7MB/0.242s → **28.7MB/0.186s**。
 - 剩余大头：每次列表请求仍复制 10.4MB 条目切片；再要降需把 entries 改成写时复制（不可变快照）。
+- **列表响应已磁盘快照化（2026-10-20，`library_snapshot.go`）**：整库响应按「头字段(排序) + 条目数 + 站源作用域」哈希为键，预渲染 `data/library/snapshot/<key>.json.gz`（保留 6 份），请求期 `ServeContent` + `ETag` + `no-cache`，复访 304。实测 27.4MB → 7.09MB，命中 0.024s（渲染 0.539s）。回落条件：非 GET/HEAD、不收 gzip、entries 为 nil、任何 IO 异常。
+- 封面内存缓存已降到 **8MiB / 256 条**（原 32MiB/512）；响应带 `private,max-age=86400`，重复访问由浏览器缓存。
+
+## 播放管线（2026-10-20 实测）
+
+- `data/playback-settings.json` 的 **`enabled` 是总开关**：默认 false → `/api/ui/playback/plan` 恒返回 `legacy/optimization_disabled` → 前端回落 `/stream` 的 libx264 全量转码。已在本机置 `enabled=true`。
+- **`directSources` 实测无效**：6 个源全加进去，`allowPlaybackDirect` 全部不通过（源站无 CORS / 需凭据），`redirect` 不可得；置空反而省掉每次 0.2–3.0s 探测。开启 enabled 后 huangdou/cloudfront/huangguoai/huangju 走**纯 Go 代理（hlsProxy），零 ffmpeg**。
+- 红果因 CENC 加密，`probePlaybackCodecs` 探测不出编码 → `video_codec_unsupported` → 回落 legacy **libx264 实时转码**，实测 **238.7% 单核 + 139.2MB RSS / 路**（2 核 VPS 一路即打满）。改进方向：给 CENC 源跳过探测、直接 `-c copy` 封装（`generatePlayback` 的 remux 路径）。
 
 ## 启动方式 / 环境
 - 局域网：**不带** -listen（默认 0.0.0.0）+ `-open=false`，必须后台启动。日志显示 127.0.0.1 是 publicURL() 展示逻辑。
