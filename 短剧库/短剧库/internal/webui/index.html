@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="/assets/app.css">
 <link rel="stylesheet" href="/assets/library.css">
 <link rel="stylesheet" href="/assets/downloads.css">
-<link rel="stylesheet" href="/assets/player.css">
+<link rel="stylesheet" href="/assets/player.css?v=20261021-seamless">
 <link rel="stylesheet" href="/assets/library-tools.css">
 <link rel="stylesheet" href="/assets/history.css">
 </head>
@@ -252,6 +252,7 @@
         <section class="player-screen" aria-label="视频播放">
           <div id="playbackStage" class="playback-stage">
             <video id="onlineVideo" controls playsinline preload="auto" tabindex="0" aria-label="在线播放器" aria-keyshortcuts="Space ArrowUp ArrowDown ArrowLeft ArrowRight F"></video>
+            <canvas id="playbackStill" class="playback-still" aria-hidden="true" hidden></canvas>
             <div class="mobile-player-heading mobile-only">
               <button id="mobileBackBtn" class="quiet icon-button" aria-label="返回剧库"><span data-icon="chevron"></span></button>
               <span id="mobileHeadingTitle" class="landscape-only"></span><span id="mobileEpisodeLabel">正在加载</span>
@@ -315,7 +316,7 @@
 <script src="/assets/player-media.js"></script>
 <script src="/assets/player-capabilities.js"></script>
 <script src="/assets/player-session.js"></script>
-<script src="/assets/player.js?v=20261018-failover"></script>
+<script src="/assets/player.js?v=20261021-seamless"></script>
 <script src="/assets/library-sort.js"></script>
 <script src="/assets/vip-filter.js"></script>
 <script src="/assets/rankings.js"></script>

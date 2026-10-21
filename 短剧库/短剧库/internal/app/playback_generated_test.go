@@ -74,6 +74,49 @@ func TestPlaybackGeneratedPlaylistFallsBackWhenCancelled(t *testing.T) {
 	}
 }
 
+// 预生成的产物要先按空 base 生成，切集前再换成真实 run 的地址。
+func TestPlaybackGeneratedAdoptRewritesAssetURLs(t *testing.T) {
+	generated := playlistFixture(t)
+	defer generated.cancel()
+	writePlaylistFixture(t, generated, playlistWithSegment)
+
+	recorder := httptest.NewRecorder()
+	generated.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/media/index.m3u8", nil))
+	if body := recorder.Body.String(); !strings.Contains(body, "/media/000000.m4s") {
+		t.Fatalf("初始地址不对：%q", body)
+	}
+
+	generated.adopt("/api/ui/playback/media/9/4/", "v=12")
+	recorder = httptest.NewRecorder()
+	generated.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/ui/playback/media/9/4/index.m3u8", nil))
+	body := recorder.Body.String()
+	if !strings.Contains(body, "/api/ui/playback/media/9/4/000000.m4s?v=12") {
+		t.Fatalf("接管后地址没换：%q", body)
+	}
+}
+
+// 交出去的产物不能被预取收尾一起关掉；没交出去的必须由预取关掉。
+func TestPlaybackPrefetchReleasesOnlyUnownedGenerated(t *testing.T) {
+	taken := playlistFixture(t)
+	cache := newPlaybackPrefetch(2, 1)
+	cache.generated = taken
+	if cache.takeGenerated() != taken {
+		t.Fatal("takeGenerated 没交回产物")
+	}
+	cache.cancel()
+	if taken.ctx.Err() != nil {
+		t.Fatal("已交给前台的产物被预取关掉了")
+	}
+
+	owned := playlistFixture(t)
+	other := newPlaybackPrefetch(3, 1)
+	other.generated = owned
+	other.cancel()
+	if owned.ctx.Err() == nil {
+		t.Fatal("没人接手的产物应该在预取收尾时关闭")
+	}
+}
+
 // 分片文件按名字放行（渐进阶段 files 还没登记）。
 func TestPlaybackGeneratedServesSegmentByName(t *testing.T) {
 	generated := playlistFixture(t)

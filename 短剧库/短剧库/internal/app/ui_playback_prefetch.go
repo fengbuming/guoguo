@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -20,7 +21,9 @@ type playbackPrefetch struct {
 	quality    int
 	remux      bool
 	planOnly   bool
+	prepare    string
 	resolved   *playbackMediaSession
+	generated  *playbackGenerated
 	native     *playbackNative
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -48,8 +51,28 @@ func newPlaybackPrefetch(episode int, run uint64) *playbackPrefetch {
 		chunks: make(chan []byte, playbackPrefetchChunks), ready: make(chan struct{}), done: make(chan struct{}), headers: make(http.Header)}
 	ctx = context.WithValue(ctx, playbackPrefetchKey{}, cache)
 	ctx, cancel := context.WithCancel(ctx)
-	cache.ctx, cache.cancel = ctx, cancel
+	base := cancel
+	cache.ctx, cache.cancel = ctx, func() {
+		base()
+		cache.releasePrepared()
+	}
 	return cache
+}
+
+// takeGenerated 把预生成的封装产物交给前台会话；交出去之后预取不再负责关闭它。
+func (cache *playbackPrefetch) takeGenerated() *playbackGenerated {
+	cache.mu.Lock()
+	generated := cache.generated
+	cache.generated = nil
+	cache.mu.Unlock()
+	return generated
+}
+
+// releasePrepared 预取被丢弃时关掉还没人接手的产物。
+func (cache *playbackPrefetch) releasePrepared() {
+	if generated := cache.takeGenerated(); generated != nil {
+		generated.Close()
+	}
 }
 
 func (cache *playbackPrefetch) Header() http.Header              { return cache.headers }
@@ -99,8 +122,12 @@ func (cache *playbackPrefetch) finish(err error) {
 
 func (cache *playbackPrefetch) view() *playbackPrefetchView {
 	cache.mu.Lock()
+	prepared := cache.generated != nil && cache.err == nil
 	resolved := cache.resolved != nil && cache.err == nil
 	cache.mu.Unlock()
+	if prepared {
+		return &playbackPrefetchView{Episode: cache.episode, State: "prepared"}
+	}
 	if resolved {
 		return &playbackPrefetchView{Episode: cache.episode, State: "resolved"}
 	}
@@ -210,8 +237,15 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 		Version uint64 `json:"version"`
 		Cancel  bool   `json:"cancel"`
 		Remux   bool   `json:"remux"`
+		// Prepare 为空表示只解析地址；"remux" 表示直接把下一集封装成可按需拖动的产物，
+		// 切集时 plan 直接接管，省掉 2~3 秒的 ffmpeg 启动等待。
+		Prepare string `json:"prepare"`
 	}
 	if !readPlaybackRequest(writer, request, &input) {
+		return
+	}
+	if input.Prepare != "" && input.Prepare != "remux" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "预取方式无效"})
 		return
 	}
 	app.playbackMu.Lock()
@@ -264,6 +298,7 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 	}
 	cache := newPlaybackPrefetch(input.Episode, input.Run)
 	cache.quality, cache.remux = session.quality, remux
+	cache.prepare = input.Prepare
 	// MSE / 原始直连模式只做地址解析（planOnly）：这两种模式播放时字节本来就要经过
 	// 服务端代理，预取的价值在于提前完成取址/解密，让连播切换秒开；真缓存 32MB
 	// 反而白白占用一倍带宽。native HLS 模式（手机）则真正缓存首批分片，因为
@@ -298,15 +333,31 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 		startup := time.AfterFunc(60*time.Second, cache.cancel)
 		defer startup.Stop()
 		if cache.planOnly {
-			defer cache.cancel()
 			resolved, err := app.resolveMediaSession(cache.ctx, cache.ctx, task, downloadID, cache.quality)
-			if err == nil {
-				cache.mu.Lock()
-				cache.resolved = resolved
-				cache.mu.Unlock()
-				resolved.Close()
+			if err != nil {
+				cache.cancel()
+				cache.finish(err)
+				return
 			}
-			cache.finish(err)
+			defer resolved.Close()
+			cache.mu.Lock()
+			cache.resolved = resolved
+			cache.mu.Unlock()
+			if cache.prepare == "remux" {
+				// 前台正在播这一集时提前把下一集封装好：切集时 plan 直接接管产物，
+				// 不再等 ffmpeg 启动 + 拉首片。产物用「不随预取取消」的上下文，
+				// 否则预取一收尾 ffmpeg 就被掐，接管等于白做。
+				generated, err := app.preparePlaybackGenerated(cache, resolved)
+				if err == nil {
+					cache.mu.Lock()
+					cache.generated = generated
+					cache.mu.Unlock()
+				}
+				cache.finish(err)
+				return
+			}
+			cache.cancel()
+			cache.finish(nil)
 			return
 		}
 		if cache.native != nil {
@@ -334,8 +385,27 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 	writeJSON(writer, http.StatusAccepted, &playbackPrefetchView{Episode: input.Episode, State: "preparing"})
 }
 
-func (app *UIApp) servePrefetchedPlayback(ctx context.Context, writer http.ResponseWriter, cache *playbackPrefetch, run uint64, ready func(float64)) (bool, error) {
-	if cache == nil {
+// preparePlaybackGenerated 在预取阶段把下一集的封装产物做出来。
+//
+// 只对「服务端解密 + 换封装」这一类预生成：非加密源要先探测编码，结论不确定，
+// 预生成可能白跑一遍 ffmpeg。产物用不随预取取消的上下文，切集时由 plan 接管。
+func (app *UIApp) preparePlaybackGenerated(cache *playbackPrefetch, media *playbackMediaSession) (*playbackGenerated, error) {
+	if len(media.media.CENCKey) == 0 {
+		return nil, errors.New("只有加密源需要预生成封装产物")
+	}
+	if err := app.generatePlaybackWithParent(cache.ctx, context.WithoutCancel(cache.ctx), media, "remux", "", ""); err != nil {
+		return nil, err
+	}
+	generated := media.generated
+	// 交出去：resolved 会话随预取收尾关闭，不能再让它把产物一起关掉。
+	media.generated = nil
+	if generated == nil {
+		return nil, errors.New("预生成封装产物失败")
+	}
+	return generated, nil
+}
+
+func (app *UIApp) servePrefetchedPlayback(ctx context.Context, writer http.ResponseWriter, cache *playbackPrefetch, run uint64, ready func(float64)) (bool, error) {	if cache == nil {
 		return false, nil
 	}
 	used, err := cache.serve(ctx, writer, run, ready)

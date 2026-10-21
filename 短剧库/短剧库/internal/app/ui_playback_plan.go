@@ -136,6 +136,21 @@ func (app *UIApp) planMedia(ctx context.Context, media *playbackMediaSession, cl
 			media.plan.Player, media.plan.Processing, media.plan.Reason = "legacy", "video", "hls_player_unavailable"
 			return nil
 		}
+		if media.generated != nil && processing == "remux" {
+			// 接管预生成的封装产物：地址换成当前 run，分片已经在磁盘上，切集几乎零等待。
+			media.generated.adopt(base, query)
+			media.plan.URL = media.generated.assetURL("index.m3u8")
+			media.plan.Player, media.plan.MIME, media.plan.Processing = "hls", playbackGeneratedMIME, processing
+			if duration := media.generated.duration(); duration > 0 {
+				media.plan.Duration, media.plan.SeekEnd = duration, duration
+			}
+			return nil
+		}
+		if media.generated != nil {
+			// 预生成的只有 remux，其它处理方式用不上。
+			media.generated.Close()
+			media.generated = nil
+		}
 		if err := app.generatePlayback(ctx, media, processing, base, query); err != nil {
 			var outputErr *playbackOutputError
 			if errors.As(err, &outputErr) && ctx.Err() == nil {
@@ -216,6 +231,10 @@ func (app *UIApp) handlePlaybackPlan(writer http.ResponseWriter, request *http.R
 	stop := context.AfterFunc(request.Context(), cancel)
 	defer stop()
 	media, err = app.resolveMediaSession(run.ctx, ctx, run.task, run.downloadID, input.Quality, run.cache)
+	if err == nil && run.cache != nil {
+		// 预取阶段已经封装好的下一集产物，直接接管，省掉 ffmpeg 启动与拉首片。
+		media.generated = run.cache.takeGenerated()
+	}
 	if err == nil {
 		base := "/api/ui/playback/media/" + run.id + "/" + strconv.FormatUint(run.run, 10) + "/"
 		err = app.planMedia(ctx, media, input.Client, input.Mode, sourceFromDramaID(run.task.DramaID), request.Header.Get("Origin"), base, "")

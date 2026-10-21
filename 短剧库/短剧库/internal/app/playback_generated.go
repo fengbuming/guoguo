@@ -74,6 +74,15 @@ func playbackGeneratedArgs(media providerMedia, input, processing string) []stri
 // 不需要等整集跑完。ffmpeg 仍在跑时 ServeHTTP 会把正在增长的 index.m3u8 改写成对外
 // 播放清单（注入 EXT-X-START 让播放器从 0 开始），跑完后再切换成校验过的完整 VOD 清单。
 func (app *UIApp) generatePlayback(ctx context.Context, media *playbackMediaSession, processing, base, query string) error {
+	return app.generatePlaybackWithParent(ctx, media.ctx, media, processing, base, query)
+}
+
+// generatePlaybackWithParent 让调用方指定封装进程的父上下文。
+//
+// 预取阶段要把产物「过户」给后面的前台会话：如果父上下文挂在预取自己的 ctx 上，
+// 预取一收尾就把 ffmpeg 掐了。传 context.WithoutCancel 的 ctx 之后，产物只受
+// playbackGenerated.Close() 控制。
+func (app *UIApp) generatePlaybackWithParent(ctx, jobParent context.Context, media *playbackMediaSession, processing, base, query string) error {
 	ffmpeg, err := app.downloader.ensureFFmpeg(ctx)
 	if err != nil {
 		return err
@@ -87,7 +96,7 @@ func (app *UIApp) generatePlayback(ctx context.Context, media *playbackMediaSess
 		release()
 		return err
 	}
-	jobCtx, cancel := context.WithCancel(media.ctx)
+	jobCtx, cancel := context.WithCancel(jobParent)
 	// jobCtx 故意不再挂 ctx：plan 请求返回后 ctx 会被调用方 cancel，
 	// 而封装必须继续在后台跑完，否则「边生成边播」当场断流。
 	// 生命周期统一由 media.Close()/会话结束走 cancel 回收。
@@ -256,11 +265,40 @@ func (generated *playbackGenerated) accountCacheLocked() error {
 }
 
 func (generated *playbackGenerated) assetURL(name string) string {
-	address := generated.base + name
-	if generated.query != "" {
-		address += "?" + generated.query
+	generated.mu.RLock()
+	defer generated.mu.RUnlock()
+	return playbackAssetURL(generated.base, generated.query, name)
+}
+
+// assetURLLocked 供已持锁的路径使用（RWMutex 不可重入）。
+func (generated *playbackGenerated) assetURLLocked(name string) string {
+	return playbackAssetURL(generated.base, generated.query, name)
+}
+
+func playbackAssetURL(base, query, name string) string {
+	address := base + name
+	if query != "" {
+		address += "?" + query
 	}
 	return address
+}
+
+// duration 返回已索引分片的总时长；还没跑完时可能是 0。
+func (generated *playbackGenerated) duration() float64 {
+	generated.mu.RLock()
+	defer generated.mu.RUnlock()
+	if len(generated.segments) == 0 {
+		return 0
+	}
+	last := generated.segments[len(generated.segments)-1]
+	return last.Start + last.Duration
+}
+
+// adopt 把预生成的产物挂到真实播放地址上（预取阶段还不知道 run 号，产物先按空 base 生成）。
+func (generated *playbackGenerated) adopt(base, query string) {
+	generated.mu.Lock()
+	generated.base, generated.query = base, query
+	generated.mu.Unlock()
 }
 
 func validPlaybackSegmentName(name string) bool {
@@ -294,7 +332,7 @@ func (generated *playbackGenerated) index(playlist string) (err error) {
 				return errors.New("媒体初始化片段无效")
 			}
 			generated.files[matches[1]] = true
-			lines[i] = strings.Replace(line, matches[0], `URI="`+generated.assetURL(matches[1])+`"`, 1)
+			lines[i] = strings.Replace(line, matches[0], `URI="`+generated.assetURLLocked(matches[1])+`"`, 1)
 		} else if line != "" && !strings.HasPrefix(line, "#") {
 			if duration <= 0 || !validPlaybackSegmentName(line) || len(generated.segments) >= 16384 || start+duration > 24*60*60 {
 				return errors.New("媒体分片索引无效")
@@ -303,7 +341,7 @@ func (generated *playbackGenerated) index(playlist string) (err error) {
 			generated.segments = append(generated.segments, playbackSegmentIndex{Name: line, Start: start, Duration: duration})
 			start += duration
 			duration = 0
-			lines[i] = generated.assetURL(line)
+			lines[i] = generated.assetURLLocked(line)
 		}
 	}
 	if len(generated.segments) == 0 || duration != 0 {
@@ -334,6 +372,8 @@ func (generated *playbackGenerated) index(playlist string) (err error) {
 // 未完成时清单里没有 ENDLIST（播放器会按 live 轮询），并注入 EXT-X-START
 // 让它从 0 开始而不是从 live 边缘开始。
 func (generated *playbackGenerated) progressivePlaylist() string {
+	generated.mu.RLock()
+	defer generated.mu.RUnlock()
 	body, err := os.ReadFile(filepath.Join(generated.directory, "index.m3u8"))
 	if err != nil {
 		return ""
@@ -352,7 +392,7 @@ func (generated *playbackGenerated) progressivePlaylist() string {
 		switch {
 		case strings.HasPrefix(trimmed, "#EXT-X-MAP:"):
 			if matches := hlsURIAttribute.FindStringSubmatch(trimmed); len(matches) == 2 && validPlaybackSegmentName(matches[1]) {
-				trimmed = strings.Replace(trimmed, matches[0], `URI="`+generated.assetURL(matches[1])+`"`, 1)
+				trimmed = strings.Replace(trimmed, matches[0], `URI="`+generated.assetURLLocked(matches[1])+`"`, 1)
 			}
 		case strings.HasPrefix(trimmed, "#EXT-X-START:"):
 			continue
@@ -363,7 +403,7 @@ func (generated *playbackGenerated) progressivePlaylist() string {
 			if !validPlaybackSegmentName(trimmed) {
 				continue
 			}
-			trimmed = generated.assetURL(trimmed)
+			trimmed = generated.assetURLLocked(trimmed)
 		case !started && strings.HasPrefix(trimmed, "#EXT-X-TARGETDURATION:"):
 			out = append(out, trimmed)
 			if !typed {

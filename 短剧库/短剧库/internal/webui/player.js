@@ -2,6 +2,9 @@
   const node = id => document.getElementById(id);
   const panel = node('playerPanel');
   const video = node('onlineVideo');
+  const stillCanvas = node('playbackStill');
+  const stillContext = stillCanvas && stillCanvas.getContext ? stillCanvas.getContext('2d') : null;
+  let stillTimer = null;
   const episodeList = node('playbackEpisodes');
   const statusText = node('playbackStatus');
   const bufferStatus = node('playbackBufferStatus');
@@ -68,6 +71,36 @@
 
   function clear(element) {
     while (element.firstChild) element.removeChild(element.firstChild);
+  }
+
+  // 换集时 video 会被清空（removeAttribute('src') + load()），露出灰底。
+  // 这里把当前帧抓到 canvas 上盖住，等新一集真的出画再淡出，切换过程只剩"定格"没有"泛灰"。
+  function holdLastFrame() {
+    if (!stillCanvas || !stillContext || !video.videoWidth || !video.videoHeight || video.readyState < 2) return false;
+    try {
+      stillCanvas.width = video.videoWidth;
+      stillCanvas.height = video.videoHeight;
+      stillContext.drawImage(video, 0, 0, stillCanvas.width, stillCanvas.height);
+    } catch (_) {
+      return false;
+    }
+    stillCanvas.style.opacity = '1';
+    stillCanvas.hidden = false;
+    clearTimeout(stillTimer);
+    // 兜底：新一集迟迟不出画（例如源失效）也不能一直盖着
+    stillTimer = setTimeout(() => releaseLastFrame(true), 12000);
+    return true;
+  }
+
+  function releaseLastFrame(immediate) {
+    if (!stillCanvas || stillCanvas.hidden) return;
+    clearTimeout(stillTimer);
+    if (immediate) {
+      stillCanvas.hidden = true;
+      return;
+    }
+    stillCanvas.style.opacity = '0';
+    stillTimer = setTimeout(() => {stillCanvas.hidden = true;}, 220);
   }
 
   const capabilities = window.JukuPlaybackCapabilities(window, video, navigator);
@@ -582,8 +615,8 @@
   function renderPrefetchStatus(view) {
     if (!prefetchToggle.checked || !view || view.episode !== currentIndex + 1) return;
     prefetchStatus.hidden = false;
-    prefetchStatus.textContent = view.state === 'resolved' ? '下一集地址已准备' : view.state === 'ready' ? '下一集已缓存' : view.state === 'partial' ? '下一集开头已缓存' : view.state === 'failed' ? '下一集将正常缓冲' : '正在缓存下一集…';
-    prefetchPreparing = !['ready', 'partial', 'resolved', 'failed'].includes(view.state);
+    prefetchStatus.textContent = view.state === 'prepared' ? '下一集已就绪（切集无等待）' : view.state === 'resolved' ? '下一集地址已准备' : view.state === 'ready' ? '下一集已缓存' : view.state === 'partial' ? '下一集开头已缓存' : view.state === 'failed' ? '下一集将正常缓冲' : '正在缓存下一集…';
+    prefetchPreparing = !['prepared', 'ready', 'partial', 'resolved', 'failed'].includes(view.state);
     schedulePrefetchStatus();
   }
 
@@ -597,7 +630,7 @@
     const version = ++prefetchVersion;
     prefetchAttempted = currentIndex;
     renderPrefetchStatus({episode: currentIndex + 1, state: 'preparing'});
-    requestJSON('/api/ui/playback/prefetch', {session, episode: currentIndex + 1, run, version, remux: allowRemux && transport === 'mse'}, openingController?.signal).then(view => {
+    requestJSON('/api/ui/playback/prefetch', {session, episode: currentIndex + 1, run, version, remux: allowRemux && transport === 'mse', prepare: mediaPlan && mediaPlan.processing === 'remux' ? 'remux' : ''}, openingController?.signal).then(view => {
       if (session === sessionID && run === playbackRun && version === prefetchVersion) renderPrefetchStatus(view);
     }).catch(error => {
       if (session === sessionID && run === playbackRun && version === prefetchVersion && error.name !== 'AbortError') renderPrefetchStatus({episode: currentIndex + 1, state: 'failed'});
@@ -678,6 +711,7 @@
     const nextPlanKey = dramaID + ':' + index + ':' + quality;
     if (planKey !== nextPlanKey) {planKey = nextPlanKey; planMode = 'auto'; planFallbacks = 0; networkRefreshes = 0;}
     if (!sessionAvailable) {recoverPlayback(index, offset, shouldPlay); return;}
+    holdLastFrame();
     stopStream();
     if (!keepResumeMessage) {
       historyMessage = '';
@@ -848,6 +882,10 @@
     playEpisode(currentIndex, recoveryPosition(), true, true);
   }
   video.addEventListener('waiting', () => {if (!loading && !errorText.textContent) statusText.textContent = '正在缓冲…'; markStalled();});
+  // 新一集真正出画后才撤掉上一集的定格帧
+  video.addEventListener('loadeddata', () => releaseLastFrame());
+  video.addEventListener('playing', () => releaseLastFrame());
+  video.addEventListener('seeked', () => {if (!loading) releaseLastFrame();});
   video.addEventListener('pause', () => {clearStallTimer(); if (!loading && !video.error) desiredPlayback = false; if (!loading) saveHistory(true); if (!loading && !video.ended && !errorText.textContent) statusText.textContent = '已暂停';});
   video.addEventListener('error', async () => {
     if (!video.error || !video.hasAttribute('src') || !panel.open) return;
