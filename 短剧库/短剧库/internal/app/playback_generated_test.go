@@ -95,6 +95,22 @@ func TestPlaybackGeneratedAdoptRewritesAssetURLs(t *testing.T) {
 	}
 }
 
+// 已经渲染完的完整清单同样要跟着换地址（预生成时 base 是空的）。
+func TestPlaybackGeneratedAdoptRewritesRenderedPlaylist(t *testing.T) {
+	generated := playlistFixture(t)
+	defer generated.cancel()
+	generated.playlist = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\n000000.m4s\n#EXT-X-ENDLIST\n"
+	generated.adopt("/api/ui/playback/media/7/3/", "")
+	recorder := httptest.NewRecorder()
+	generated.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/ui/playback/media/7/3/index.m3u8", nil))
+	body := recorder.Body.String()
+	if !strings.Contains(body, `URI="/api/ui/playback/media/7/3/init.mp4"`) ||
+		!strings.Contains(body, "/api/ui/playback/media/7/3/000000.m4s") ||
+		strings.Contains(body, "\n000000.m4s") {
+		t.Fatalf("渲染好的清单没换地址：%q", body)
+	}
+}
+
 // 交出去的产物不能被预取收尾一起关掉；没交出去的必须由预取关掉。
 func TestPlaybackPrefetchReleasesOnlyUnownedGenerated(t *testing.T) {
 	taken := playlistFixture(t)

@@ -93,7 +93,10 @@ func (app *UIApp) probePlaybackCodecs(ctx context.Context, media *playbackMediaS
 
 func (app *UIApp) planMedia(ctx context.Context, media *playbackMediaSession, client playbackClientCapabilities, mode, source, origin, base, query string) error {
 	app.attachMediaGateway(media, base, query)
-	app.inspectPlaybackMedia(ctx, media)
+	if media.generated == nil {
+		// 预生成的产物已经知道时长和编码，不用再去源站读 moov（VPS 上这一下要 1s+）。
+		app.inspectPlaybackMedia(ctx, media)
+	}
 	if mode == "legacy" {
 		media.plan.Player, media.plan.Processing, media.plan.Reason = "legacy", "video", "client_decode_failed"
 		return nil
@@ -144,6 +147,9 @@ func (app *UIApp) planMedia(ctx context.Context, media *playbackMediaSession, cl
 			if duration := media.generated.duration(); duration > 0 {
 				media.plan.Duration, media.plan.SeekEnd = duration, duration
 			}
+			app.downloader.recordDiagnostic(diagnosticEvent{Level: "info", Event: "playback.plan.adopt",
+				Source: source,
+				Message: "接手预生成产物 duration=" + strconv.FormatFloat(media.plan.Duration, 'f', 2, 64)})
 			return nil
 		}
 		if media.generated != nil {

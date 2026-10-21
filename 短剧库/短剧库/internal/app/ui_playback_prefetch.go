@@ -123,7 +123,9 @@ func (cache *playbackPrefetch) finish(err error) {
 func (cache *playbackPrefetch) view() *playbackPrefetchView {
 	cache.mu.Lock()
 	prepared := cache.generated != nil && cache.err == nil
-	resolved := cache.resolved != nil && cache.err == nil
+	// 会话已经解析、产物还在生成：对前端来说是"还在准备"，不能报成 resolved。
+	preparing := cache.prepare == "remux" && cache.generated == nil && cache.err == nil
+	resolved := cache.resolved != nil && cache.err == nil && !preparing
 	cache.mu.Unlock()
 	if prepared {
 		return &playbackPrefetchView{Episode: cache.episode, State: "prepared"}
@@ -353,9 +355,13 @@ func (app *UIApp) handlePlaybackPrefetch(writer http.ResponseWriter, request *ht
 					cache.generated = generated
 					cache.mu.Unlock()
 				}
+				app.downloader.recordDiagnostic(diagnosticEvent{Level: "info", Event: "playback.prefetch.prepare",
+					Episode: cache.episode, Message: app.redactError(err)})
 				cache.finish(err)
 				return
 			}
+			app.downloader.recordDiagnostic(diagnosticEvent{Level: "info", Event: "playback.prefetch.resolve",
+				Episode: cache.episode, Message: "planOnly prepare=" + cache.prepare})
 			cache.cancel()
 			cache.finish(nil)
 			return

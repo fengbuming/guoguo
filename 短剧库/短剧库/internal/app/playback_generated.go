@@ -295,10 +295,29 @@ func (generated *playbackGenerated) duration() float64 {
 }
 
 // adopt 把预生成的产物挂到真实播放地址上（预取阶段还不知道 run 号，产物先按空 base 生成）。
+// 已经渲染好的完整清单里的地址也要跟着换，否则分片会指回空 base 的裸文件名。
 func (generated *playbackGenerated) adopt(base, query string) {
 	generated.mu.Lock()
+	defer generated.mu.Unlock()
 	generated.base, generated.query = base, query
-	generated.mu.Unlock()
+	if generated.playlist == "" {
+		return
+	}
+	lines := strings.Split(generated.playlist, "\n")
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "#EXT-X-MAP:"):
+			if matches := hlsURIAttribute.FindStringSubmatch(trimmed); len(matches) == 2 {
+				name := filepath.Base(strings.SplitN(matches[1], "?", 2)[0])
+				lines[index] = strings.Replace(trimmed, matches[0], `URI="`+playbackAssetURL(base, query, name)+`"`, 1)
+			}
+		case trimmed != "" && !strings.HasPrefix(trimmed, "#"):
+			name := filepath.Base(strings.SplitN(trimmed, "?", 2)[0])
+			lines[index] = playbackAssetURL(base, query, name)
+		}
+	}
+	generated.playlist = strings.Join(lines, "\n")
 }
 
 func validPlaybackSegmentName(name string) bool {
