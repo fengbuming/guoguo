@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -81,5 +82,102 @@ func TestPlaybackIdleExpiryStillReleasesStreamAndSlot(t *testing.T) {
 	writer := historyJSONRequest(t, app, app.handlePlaybackControl, "/api/ui/playback/control", map[string]string{"session": session.id, "action": "heartbeat"})
 	if writer.Code != http.StatusGone {
 		t.Fatal("expired sessions must be recoverable by the client", writer.Code)
+	}
+}
+
+func TestPlaybackSessionCapCanBeDisabled(t *testing.T) {
+	app, _ := historyFixtureApp(t)
+	zero := defaultPlaybackSettings()
+	zero.MaxSessions = 0
+	if err := zero.validate(); err != nil {
+		t.Fatal("maxSessions=0 should be a valid setting", err)
+	}
+	zero.MaxSessions = -1
+	if err := zero.validate(); err == nil {
+		t.Fatal("negative session cap should be rejected")
+	}
+	resources := app.mediaResources()
+	resources.settings.MaxSessions = 0
+	app.playbackMu.Lock()
+	disabled := !app.playbackSessionFullLocked()
+	app.playbackMu.Unlock()
+	if !disabled {
+		t.Fatal("maxSessions=0 should disable the concurrent playback cap")
+	}
+	resources.settings.MaxSessions = 1
+	app.playbackMu.Lock()
+	reached := app.playbackSessionFullLocked()
+	app.playbackMu.Unlock()
+	if !reached {
+		t.Fatal("maxSessions=1 should be reached by the existing session")
+	}
+}
+
+func TestPlaybackReclaimsOwnIdleSessionAtCap(t *testing.T) {
+	app, active := historyFixtureApp(t)
+	app.mediaResources().settings.MaxSessions = 1
+	stale := &playbackSession{id: "stale-tab", viewer: active.viewer, dramaID: active.dramaID,
+		openedAt: time.Now().Add(-20 * time.Minute), state: "ready", expires: time.Now().Add(playbackIdleTimeout)}
+	stale.viewer.retain()
+	stale.timer = time.AfterFunc(time.Hour, func() {})
+	app.playbackMu.Lock()
+	app.playbacks[stale.id] = stale
+	app.playbackMu.Unlock()
+	app.playbackMu.Lock()
+	reclaimed := app.reclaimPlaybackSlotLocked(active.viewer)
+	app.playbackMu.Unlock()
+	if reclaimed == nil || reclaimed.id != stale.id {
+		t.Fatal("the oldest idle session of the same viewer should be reclaimed")
+	}
+	app.finishPlaybackSession(reclaimed)
+	app.playbackMu.Lock()
+	_, activeLeft := app.playbacks[active.id]
+	_, staleLeft := app.playbacks[stale.id]
+	app.playbackMu.Unlock()
+	if !activeLeft || staleLeft {
+		t.Fatal("reclaim must keep the current session and drop the stale one", activeLeft, staleLeft)
+	}
+}
+
+func TestPlaybackCleanupClearsAllSessions(t *testing.T) {
+	app, session := historyFixtureApp(t)
+	writer := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/ui/admin/playback/cleanup", nil)
+	app.handlePlaybackCleanup(writer, request)
+	if writer.Code != http.StatusOK {
+		t.Fatal("cleanup failed", writer.Code, writer.Body.String())
+	}
+	var result struct {
+		Cleared int `json:"cleared"`
+	}
+	if err := json.Unmarshal(writer.Body.Bytes(), &result); err != nil || result.Cleared != 1 {
+		t.Fatal("cleanup count mismatch", err, writer.Body.String())
+	}
+	if _, exists := app.playbackStatus(session.id, false); exists {
+		t.Fatal("cleanup left a playback session behind")
+	}
+}
+
+func TestPlaybackCleanupRouteIsAdminOnly(t *testing.T) {
+	app, admin := administratorFixture(t)
+	app.playbackMu.Lock()
+	if app.playbacks == nil {
+		app.playbacks = make(map[string]*playbackSession)
+	}
+	app.playbacks["stale-tab"] = &playbackSession{id: "stale-tab", state: "ready", expires: time.Now().Add(playbackIdleTimeout)}
+	app.playbackMu.Unlock()
+	guest := newAccountTestBrowser(t, app)
+	if result := guest.request(t, http.MethodPost, "/api/ui/admin/playback/cleanup", map[string]any{}); result.Code != http.StatusForbidden {
+		t.Fatal("guest cleared playback sessions", result.Code, result.Body.String())
+	}
+	response := admin.request(t, http.MethodPost, "/api/ui/admin/playback/cleanup", map[string]any{})
+	if response.Code != http.StatusOK {
+		t.Fatal("admin cleanup failed", response.Code, response.Body.String())
+	}
+	app.playbackMu.Lock()
+	remaining := len(app.playbacks)
+	app.playbackMu.Unlock()
+	if remaining != 0 {
+		t.Fatal("cleanup route left sessions behind", remaining)
 	}
 }

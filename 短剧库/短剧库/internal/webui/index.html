@@ -156,7 +156,7 @@
         <label class="playback-option"><input id="originalPlaybackEnabled" type="checkbox"><span>优先原始 MP4 / HLS 播放</span></label>
         <p class="small">默认关闭，使用原有兼容播放链路；开启后兼容内容免转码，需要处理时优先保留视频。</p>
         <div class="settings-grid">
-          <label>播放会话上限<input id="playback-maxSessions" type="number" min="1" max="64" value="4"></label>
+          <label>播放会话上限（0 = 不限制）<input id="playback-maxSessions" type="number" min="0" max="64" value="4"></label>
           <label>上游媒体连接上限<input id="playback-maxMediaRequests" type="number" min="1" max="64" value="8"></label>
           <label>解密 / 换封装并发<input id="playback-maxRemuxJobs" type="number" min="0" max="8" value="2"></label>
           <label>音频转码并发<input id="playback-maxAudioTranscodes" type="number" min="0" max="8" value="1"></label>
@@ -164,10 +164,11 @@
           <label>下一集预备并发<input id="playback-maxPrefetchJobs" type="number" min="0" max="4" value="1"></label>
           <label>封装缓存（MB）<input id="playback-cacheMB" type="number" min="64" max="8192" value="512"></label>
         </div>
-        <p class="small">Emby 探测或取流结束即释放会话名额。处理并发设为 0 可禁用该类任务；原始播放不占转码名额。</p>
+        <p class="small">播放会话上限设为 0 即不再限制同时播放（上游连接、转码和缓存额度仍然生效）。达到上限时，新开播放会自动回收本账号最旧的闲置会话，不会被自己残留的后台标签页挡住；Emby 探测或取流结束即释放会话名额。处理并发设为 0 可禁用该类任务。</p>
         <p>允许尝试客户端直连的站源</p><div id="playbackDirectSources" class="playback-direct-sources"></div>
         <p id="playbackDirectHint" class="small">先开启“优先原始 MP4 / HLS 播放”，再选择直连站源。满足源站鉴权、编码、HTTPS 和跨域条件才会直连，失败退回中转。</p>
-        <div class="toolbar"><button id="savePlaybackSettings" class="secondary">保存播放设置</button><span id="playbackSettingsStatus" class="small" role="status"></span></div>
+        <div class="toolbar"><button id="savePlaybackSettings" class="secondary">保存播放设置</button><button id="resetPlaybackSessionsBtn" class="secondary" type="button">清理播放会话</button><span id="playbackSettingsStatus" class="small" role="status"></span></div>
+        <p id="playbackSessionsStatus" class="small" role="status"></p>
       </details>
       <div class="small">保存后自动持久化。降低并发不终止正在下载的任务；代理变更用于后续连接，失败任务可重试。同一站源的剧库请求顺序执行，下载与剧库请求使用独立并发。</div>
     </div>
@@ -287,7 +288,7 @@
           </div>
           <div class="player-toolbar"><button id="toggleEpisodesBtn" class="secondary" aria-expanded="false" aria-controls="playerEpisodesPanel">选集</button><button id="previousEpisodeBtn" class="secondary icon-button" aria-label="上一集" title="上一集" disabled><span data-icon="previous"></span></button><button id="nextEpisodeBtn" class="button-content" disabled>下一集<span data-icon="next"></span></button><label id="playbackQualityControl" hidden>画质<select id="playbackQuality" aria-label="播放清晰度"><option value="0">自动</option></select></label><label>倍速<select id="playbackRate" aria-label="播放倍速"><option value="0.75">0.75 倍</option><option value="1" selected>1 倍</option><option value="1.25">1.25 倍</option><option value="1.5">1.5 倍</option><option value="2">2 倍</option><option value="3">3 倍</option></select></label><button id="reloadPlaybackBtn" class="secondary icon-button" aria-label="重新加载当前集" title="重新加载当前集"><span data-icon="refresh"></span></button><button id="playerFullscreenBtn" class="secondary icon-button" aria-label="全屏" title="全屏" hidden><span data-icon="fullscreen"></span></button><button id="playerPreferencesBtn" class="secondary icon-button" aria-label="播放设置" aria-expanded="false" aria-controls="playerPreferences"><span data-icon="settings"></span></button></div>
           <div class="playback-feedback"><span id="playbackStatus" class="small" role="status" aria-live="polite"></span><span id="playbackBufferStatus" class="small" hidden></span><span id="prefetchStatus" class="small" role="status" aria-live="polite" hidden></span></div>
-          <div id="playbackHistoryStatus" class="small" role="status" aria-live="polite"></div><div class="playback-error-row"><div id="playbackError" class="error" role="alert"></div><button id="retryPlaybackBtn" class="secondary" disabled hidden>重试播放</button></div>
+          <div id="playbackHistoryStatus" class="small" role="status" aria-live="polite"></div><div class="playback-error-row"><div id="playbackError" class="error" role="alert"></div><button id="retryPlaybackBtn" class="secondary" disabled hidden>重试播放</button><button id="cleanupPlaybackBtn" class="secondary" hidden>清理会话并重试</button></div>
           <div id="playerPreferences" class="player-preferences" hidden>
             <div class="mobile-settings-heading mobile-only"><h3 id="mobilePreferencesTitle">更多</h3><button id="closePlayerPreferencesBtn" class="quiet icon-button" aria-label="关闭播放设置"><span data-icon="close"></span></button></div>
             <div id="mobileRateGroup" class="mobile-setting-group mobile-only"><span>倍速</span><div id="mobileRateChoices" class="mobile-setting-choices" role="group" aria-label="播放倍速"></div></div>
@@ -316,7 +317,7 @@
 <script src="/assets/player-media.js"></script>
 <script src="/assets/player-capabilities.js"></script>
 <script src="/assets/player-session.js"></script>
-<script src="/assets/player.js?v=20261021-seamless"></script>
+<script src="/assets/player.js?v=20261107-playback-cleanup"></script>
 <script src="/assets/library-sort.js"></script>
 <script src="/assets/vip-filter.js"></script>
 <script src="/assets/rankings.js"></script>

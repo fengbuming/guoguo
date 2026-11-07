@@ -22,6 +22,7 @@ func (writer *playbackActivityWriter) Write(data []byte) (int, error) {
 		writer.app.playbackMu.Lock()
 		if session := writer.app.playbacks[writer.run.id]; session == writer.run.session && session.run == writer.run.run && writer.run.ctx.Err() == nil {
 			writer.app.touchPlaybackLocked(session)
+			session.lastMedia = time.Now()
 		}
 		writer.app.playbackMu.Unlock()
 		writer.nextTouch = time.Now().Add(20 * time.Second)

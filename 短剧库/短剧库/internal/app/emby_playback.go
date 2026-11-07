@@ -20,8 +20,12 @@ func (app *UIApp) activePlaybackSessionsLocked() int {
 }
 
 func (app *UIApp) trimEmbyPlaybacksLocked(reserve int) []context.CancelFunc {
-	limit := app.mediaResources().snapshot().MaxSessions - reserve
+	limit := app.mediaResources().snapshot().MaxSessions
 	var cancellations []context.CancelFunc
+	if limit <= 0 {
+		return cancellations
+	}
+	limit -= reserve
 	for {
 		count := 0
 		var oldest *playbackSession
@@ -99,7 +103,7 @@ func (app *UIApp) acquireEmbyPlayback(writer http.ResponseWriter, request *http.
 			}
 		}
 	}
-	if (session == nil || session.mediaWaiters == 0) && app.activePlaybackSessionsLocked() >= app.mediaResources().snapshot().MaxSessions {
+	if (session == nil || session.mediaWaiters == 0) && app.playbackSessionFullLocked() {
 		app.playbackMu.Unlock()
 		app.writeEmbyPlaybackError(writer, request, http.StatusTooManyRequests, "同时播放数量已达上限，请稍后再试")
 		return nil

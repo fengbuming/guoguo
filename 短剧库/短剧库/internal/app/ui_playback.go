@@ -46,6 +46,7 @@ type playbackSession struct {
 	quality         int
 	streamVersion   uint64
 	openedAt        time.Time
+	lastMedia       time.Time
 	historySequence uint64
 	historyRuns     map[uint64]playbackHistoryRun
 }
@@ -76,6 +77,7 @@ type playbackView struct {
 
 func (app *UIApp) registerPlaybackRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ui/admin/playback", app.handlePlaybackSettings)
+	mux.HandleFunc("/api/ui/admin/playback/cleanup", app.handlePlaybackCleanup)
 	mux.HandleFunc("/api/ui/playback/plan", app.handlePlaybackPlan)
 	mux.HandleFunc("/api/ui/playback/media/", app.handlePlaybackMediaAsset)
 	mux.HandleFunc("/api/emby/media/", app.handleEmbyMediaAsset)
@@ -261,9 +263,10 @@ func (app *UIApp) handlePlaybackOpen(writer http.ResponseWriter, request *http.R
 		return
 	}
 	app.playbackMu.Lock()
-	if app.activePlaybackSessionsLocked() >= app.mediaResources().snapshot().MaxSessions {
+	reclaimed := app.reclaimPlaybackSlotLocked(viewer)
+	if reclaimed == nil && app.playbackSessionFullLocked() {
 		app.playbackMu.Unlock()
-		writeJSON(writer, http.StatusTooManyRequests, map[string]string{"error": "同时播放数量已达上限，请稍后再试"})
+		writeJSON(writer, http.StatusTooManyRequests, map[string]string{"error": "同时播放数量已达上限，请在播放设置中清理会话或调高上限"})
 		return
 	}
 	if app.playbacks == nil {
@@ -274,6 +277,7 @@ func (app *UIApp) handlePlaybackOpen(writer http.ResponseWriter, request *http.R
 	app.playbacks[id] = session
 	session.timer = time.AfterFunc(playbackIdleTimeout, func() { app.expirePlayback(id) })
 	app.playbackMu.Unlock()
+	app.finishPlaybackSession(reclaimed)
 	ready := false
 	defer func() {
 		if !ready {
@@ -533,4 +537,108 @@ func (app *UIApp) handlePlaybackStream(writer http.ResponseWriter, request *http
 		err = app.streamPlayback(run.ctx, run.cancel, writer, run.task, run.downloadID, offset, run.run, ready)
 	}
 	app.finishPlaybackRun(run, err, request.Context().Err() != nil)
+}
+
+// playbackIdleAfter 用于区分"真的在传媒体"和"只有心跳在续期的僵尸会话"。
+// 心跳每 20 秒续期一次，即便页面在后台、视频已暂停，也会让会话一直不过期。
+const playbackIdleAfter = 2 * time.Minute
+
+// playbackSessionFullLocked 需在持有 app.playbackMu 时调用。
+// MaxSessions=0 表示管理员已关闭同时播放数量限制。
+func (app *UIApp) playbackSessionFullLocked() bool {
+	limit := app.mediaResources().snapshot().MaxSessions
+	return limit > 0 && app.activePlaybackSessionsLocked() >= limit
+}
+
+// finishPlaybackSession 在 app.playbackMu 释放后清理会话持有的资源。
+func (app *UIApp) finishPlaybackSession(session *playbackSession) {
+	if session == nil {
+		return
+	}
+	if session.cancel != nil {
+		session.cancel()
+	}
+	if session.prefetch != nil {
+		session.prefetch.cancel()
+	}
+	if session.viewer != nil {
+		session.viewer.release()
+	}
+}
+
+// reclaimPlaybackSlotLocked 达到上限时优先回收当前 viewer 自己的闲置会话，
+// 避免自己留在后台的旧标签页 / 未成功发出的 close 请求把自己锁在门外。
+// 只回收同一 viewer 的会话，不影响其他账号；找不到可回收对象时返回 nil。
+func (app *UIApp) reclaimPlaybackSlotLocked(viewer *viewerRecords) *playbackSession {
+	if viewer == nil {
+		return nil
+	}
+	limit := app.mediaResources().snapshot().MaxSessions
+	full := limit > 0 && app.activePlaybackSessionsLocked() >= limit
+	if limit > 0 && !full {
+		return nil
+	}
+	now := time.Now()
+	var idle, oldest *playbackSession
+	var idleID, oldestID string
+	var idleAt, oldestAt time.Time
+	for id, session := range app.playbacks {
+		if session.emby || session.viewer != viewer || session.mediaWaiters > 0 {
+			continue
+		}
+		if oldest == nil || session.openedAt.Before(oldestAt) {
+			oldest, oldestID, oldestAt = session, id, session.openedAt
+		}
+		at := session.lastMedia
+		if at.IsZero() {
+			at = session.openedAt
+		}
+		if now.Sub(at) >= playbackIdleAfter && (idle == nil || at.Before(idleAt)) {
+			idle, idleID, idleAt = session, id, at
+		}
+	}
+	target, targetID := idle, idleID
+	if target == nil && full {
+		// 名额已满却没有闲置会话时，仍淘汰本账号最旧的会话，保证随时能打开新剧。
+		// 上限设为 0 时不淘汰正在播放的会话，只清理上面的闲置会话。
+		target, targetID = oldest, oldestID
+	}
+	if target == nil {
+		return nil
+	}
+	delete(app.playbacks, targetID)
+	if target.timer != nil {
+		target.timer.Stop()
+	}
+	app.recordPlaybackCleanupDiagnostic("playback.session_reclaimed", target.dramaID, "播放名额已满，已自动回收本账号的闲置播放会话")
+	return target
+}
+
+// handlePlaybackCleanup 由管理员面板调用，一键清空全部播放会话。
+// 正在播放的页面下一次心跳会收到 410 并自动重开，不会停留在错误页。
+func (app *UIApp) handlePlaybackCleanup(writer http.ResponseWriter, request *http.Request) {
+	if !playbackRequestAllowed(writer, request, http.MethodPost) {
+		return
+	}
+	app.playbackMu.Lock()
+	sessions := app.playbacks
+	app.playbacks = make(map[string]*playbackSession)
+	for _, session := range sessions {
+		if session.timer != nil {
+			session.timer.Stop()
+		}
+	}
+	app.playbackMu.Unlock()
+	for _, session := range sessions {
+		app.finishPlaybackSession(session)
+	}
+	app.recordPlaybackCleanupDiagnostic("playback.sessions_cleared", "", "管理员已清理全部播放会话")
+	writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "cleared": len(sessions)})
+}
+
+func (app *UIApp) recordPlaybackCleanupDiagnostic(event, dramaID, message string) {
+	if app.downloader == nil {
+		return
+	}
+	app.downloader.recordDiagnostic(diagnosticEvent{Event: event, Source: sourceFromDramaID(dramaID), DramaID: dramaID, Message: message})
 }

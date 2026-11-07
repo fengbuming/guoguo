@@ -317,6 +317,7 @@
     node('nextEpisodeBtn').disabled = currentIndex < 1 || currentIndex >= episodes.length;
     node('retryPlaybackBtn').disabled = !dramaID && !collectionTaskID;
     node('retryPlaybackBtn').hidden = !errorText.textContent;
+    if (!errorText.textContent) node('cleanupPlaybackBtn').hidden = true;
     for (const button of episodeButtons) {
       const index = Number(button.dataset.episodeIndex);
       button.setAttribute('aria-current', String(index === currentIndex));
@@ -336,9 +337,10 @@
     window.JukuPlaybackDanmaku?.suspend();
     loading = false;
     qualitySelect.disabled = false;
-    errorText.textContent = (error.message || String(error)) + '；可点击“重试播放”。';
+    errorText.textContent = (error.message || String(error)) + (error.status === 429 ? '；可点击“清理会话并重试”。' : '；可点击“重试播放”。');
     statusText.textContent = '播放未完成';
     if (error.status === 410) sessionAvailable = false;
+    node('cleanupPlaybackBtn').hidden = error.status !== 429;
     updateEpisodeControls();
   }
 
@@ -920,6 +922,22 @@
     if (episodes.length && sessionAvailable) playEpisode(currentIndex || 1, lastPosition);
     else if (episodes.length) recoverPlayback(currentIndex || 1, lastPosition, true);
     else reopen(currentIndex || 1, lastPosition);
+  });
+  node('cleanupPlaybackBtn').addEventListener('click', async () => {
+    const button = node('cleanupPlaybackBtn');
+    button.disabled = true;
+    try {
+      await requestJSON('/api/ui/admin/playback/cleanup', {});
+      errorText.textContent = '';
+      button.hidden = true;
+      updateEpisodeControls();
+      reopen(currentIndex || 1, lastPosition);
+    } catch (error) {
+      button.hidden = true;
+      errorText.textContent = '清理播放会话失败：' + (error.message || '') + '。请到「代理 / 设置 → 播放与资源限制」用管理员账号清理，或直接点击“重试播放”（新开播放会自动回收本账号的闲置会话）。';
+      statusText.textContent = '播放未完成';
+      updateEpisodeControls();
+    } finally {button.disabled = false;}
   });
   // 手动重载当前集：清掉卡顿标记与恢复冷却，从当前位置强制重建播放
   function reloadPlayback() {

@@ -41,7 +41,8 @@ func defaultPlaybackSettings() playbackSettings {
 }
 
 func (settings playbackSettings) validate() error {
-	if settings.MaxSessions < 1 || settings.MaxSessions > 64 || settings.MaxMediaRequests < 1 || settings.MaxMediaRequests > 64 ||
+	// MaxSessions=0 表示不限制同时播放数量；其余额度仍然生效，避免无节制占用转码与缓存资源。
+	if settings.MaxSessions < 0 || settings.MaxSessions > 64 || settings.MaxMediaRequests < 1 || settings.MaxMediaRequests > 64 ||
 		settings.MaxRemuxJobs < 0 || settings.MaxRemuxJobs > 8 || settings.MaxAudioTranscodes < 0 || settings.MaxAudioTranscodes > 8 ||
 		settings.MaxVideoTranscodes < 0 || settings.MaxVideoTranscodes > 8 || settings.MaxPrefetchJobs < 0 || settings.MaxPrefetchJobs > 4 ||
 		settings.CacheMB < 64 || settings.CacheMB > 8192 {
@@ -188,7 +189,10 @@ func (resources *playbackResources) acquire(ctx context.Context, kind string, op
 func (app *UIApp) handlePlaybackSettings(writer http.ResponseWriter, request *http.Request) {
 	resources := app.mediaResources()
 	if request.Method == http.MethodGet {
-		writeJSON(writer, http.StatusOK, map[string]any{"settings": resources.snapshot(), "sources": accountSourceChoices})
+		app.playbackMu.Lock()
+		active := app.activePlaybackSessionsLocked()
+		app.playbackMu.Unlock()
+		writeJSON(writer, http.StatusOK, map[string]any{"settings": resources.snapshot(), "sources": accountSourceChoices, "activeSessions": active})
 		return
 	}
 	var settings playbackSettings

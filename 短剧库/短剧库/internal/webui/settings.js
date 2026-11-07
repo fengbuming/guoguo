@@ -1,6 +1,6 @@
 import { $, element, empty, button, setMessage, api, post, valueText, firstNonEmpty, dramaTitle, watchLabel, historySuffix, normalizeSource, sourceKey, sourceLabel, categoryName, episodeCount, coverURL, tagsText, dramaSearchText, rebuildOptions, number, formatBytes, formatTime, statusText, releaseText, phaseText, progressText, progressBar, episodeLabel, groupStats } from './ui-core.js';
 
-import { createPlaybackSettings } from './playback-settings.js';
+import { createPlaybackSettings } from './playback-settings.js?v=20261107-playback-cleanup';
 
 export function createSettings(app) {
   let config = {};

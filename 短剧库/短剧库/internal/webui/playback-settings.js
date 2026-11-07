@@ -14,6 +14,9 @@ export function createPlaybackSettings() {
     settings = result.settings;
     $('originalPlaybackEnabled').checked = settings.enabled;
     for (const name of fields) $('playback-' + name).value = settings[name];
+    const active = Number(result.activeSessions) || 0;
+    const limit = Number(settings.maxSessions) || 0;
+    $('playbackSessionsStatus').textContent = '当前占用播放会话：' + active + (limit > 0 ? ' / ' + limit : ' / 不限制') + '。清理会中断当前所有播放，页面会自动重连。';
     const sources = $('playbackDirectSources');
     sources.replaceChildren();
     for (const source of result.sources || []) {
@@ -39,11 +42,22 @@ export function createPlaybackSettings() {
       const value = {...settings, enabled: $('originalPlaybackEnabled').checked,
         directSources: [...$('playbackDirectSources').querySelectorAll('input:checked')].map(input => input.value)};
       for (const name of fields) value[name] = Number($('playback-' + name).value);
-      render(await post('/api/ui/admin/playback', value));
+      await post('/api/ui/admin/playback', value);
+      await load();
       $('playbackSettingsStatus').textContent = '播放设置已保存，新任务按当前限制执行。' + (!value.enabled && value.directSources.length ? '原始播放已关闭，直连暂不生效。' : '');
     } catch (error) {$('playbackSettingsStatus').textContent = '保存失败：' + error.message;}
     finally {button.disabled = false;}
   }
-  function init() {$('savePlaybackSettings').onclick = save; $('originalPlaybackEnabled').onchange = updateDirect; return load();}
+  async function cleanup() {
+    const button = $('resetPlaybackSessionsBtn');
+    button.disabled = true;
+    try {
+      const result = await post('/api/ui/admin/playback/cleanup', {});
+      await load();
+      $('playbackSettingsStatus').textContent = '已清理 ' + (Number(result.cleared) || 0) + ' 个播放会话；正在播放的页面会自动重连。';
+    } catch (error) {$('playbackSettingsStatus').textContent = '清理失败：' + error.message;}
+    finally {button.disabled = false;}
+  }
+  function init() {$('savePlaybackSettings').onclick = save; $('resetPlaybackSessionsBtn').onclick = cleanup; $('originalPlaybackEnabled').onchange = updateDirect; return load();}
   return {init};
 }
