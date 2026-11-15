@@ -63,7 +63,12 @@ func (downloader *Downloader) resolveHongguoModelMedia(ctx context.Context, vide
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
-	result, err := downloader.postHongguoModel(ctx, videoID)
+	result, err := downloader.postHongguoModelV2(ctx, videoID)
+	if err != nil && !errors.Is(err, errHongguoPlayerEmpty) {
+		// 新签名链路遇到网络/HTTP 异常时保留旧链路作为兼容回退；空响应是上游
+		// 静默丢弃，旧签名同样拿不到数据，不再重复请求以免拖慢播放解析。
+		result, err = downloader.postHongguoModel(ctx, videoID)
+	}
 	if err != nil {
 		return providerMedia{}, err
 	}

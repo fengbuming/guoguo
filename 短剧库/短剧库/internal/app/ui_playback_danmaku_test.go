@@ -88,7 +88,9 @@ func TestHongguoDanmakuCacheAndConcurrentRequests(t *testing.T) {
 	d := rankingTestDownloader(t, func(request *http.Request) (*http.Response, error) {
 		count := calls.Add(1)
 		if request.URL.Path == "/novel/player/video_detail/v1/" {
-			if request.Header.Get("X-Argus") != "" || request.Header.Get("X-Ladon") != "" || request.Header.Get("Comment-Source") != "" {
+			// 普通 App 请求现使用 551 版 X-Argus/X-Ladon（合法）；此处只确保
+			// 弹幕专用的 Comment-Source / Server-Channel 不泄漏到普通请求。
+			if request.Header.Get("Comment-Source") != "" || request.Header.Get("Server-Channel") != "" {
 				t.Error("comment signatures leaked into the regular player request")
 			}
 			return rankingHTTPResponse(request, 200, `{"code":0}`), nil

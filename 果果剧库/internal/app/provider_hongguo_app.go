@@ -9,14 +9,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const hongguoAppBaseURL = "https://api5-normal-sinfonlineb.fqnovel.com"
-const hongguoAppUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+// 7.4.3.32：上游网关自 2026-11 起按设备档案校验签名，旧 7.3.5.32 会被静默丢弃。
+const hongguoAppUserAgent = "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
 type hongguoCatalogCursor struct {
 	Offset        int       `json:"offset"`
@@ -147,16 +147,14 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	client.mu.Lock()
 	base, deviceID, installID := client.baseURL, client.state.DeviceID, client.state.InstallID
 	client.mu.Unlock()
-	query := url.Values{
-		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {"73532"}, "version_name": {"7.3.5.32"},
-		"manifest_version_code": {"73532"}, "update_version_code": {"73532"}, "channel": {"update_64"},
-		"device_platform": {"android"}, "os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"},
-		"device_brand": {"Redmi"}, "language": {"zh"}, "os_api": {"36"}, "os_version": {"16"},
-		"resolution": {"1280*2772"}, "dpi": {"520"}, "ac": {"wifi"}, "device_id": {deviceID}, "iid": {installID},
-	}
+	// 7.4.3.32 设备档案由 hongguoPlayerQuery 统一构造，保证签名与 query 字节一致。
+	extraPairs := make([][2]string, 0, len(extra))
 	for key, values := range extra {
-		query[key] = append([]string(nil), values...)
+		for _, value := range values {
+			extraPairs = append(extraPairs, [2]string{key, value})
+		}
 	}
+	cdid := hongguoPlayerCDID()
 	var body []byte
 	var err error
 	if payload != nil {
@@ -186,9 +184,14 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			return nil, err
 		}
 		request.Header.Set("User-Agent", hongguoAppUserAgent)
-		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
+		request.Header.Set("passport-sdk-version", "5051452")
+		request.Header.Set("x-ss-dp", "8662")
+		request.Header.Set("x-tt-dt", "")
+		request.Header.Set("x-tt-store-region", "cn")
+		request.Header.Set("x-tt-store-region-src", "did")
 		comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
 		var commentNonce hongguoCommentNonce
 		if comment {
@@ -204,12 +207,12 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, func(prepared *http.Request) {
 			now := time.Now()
-			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
-			prepared.URL.RawQuery = query.Encode()
+			prepared.URL.RawQuery = hongguoPlayerQuery(installID, deviceID, cdid, extraPairs, now)
 			if comment {
 				signHongguoCommentRequest(prepared, commentNonce, now)
 			} else {
-				signHongguoRequest(prepared, body, now)
+				// 551 版 Argus/Ladon：旧 X-Gorgon 已被上游静默丢弃。
+				signHongguoPlayerRequest(prepared, body, now)
 			}
 		})
 		if err != nil {
