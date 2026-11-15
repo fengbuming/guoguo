@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/aes"
-	"crypto/md5"
 	"crypto/cipher"
+	"crypto/md5"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
@@ -63,11 +63,14 @@ func (downloader *Downloader) resolveHongguoModelMedia(ctx context.Context, vide
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
-	result, err := downloader.postHongguoModelV2(ctx, videoID)
+	result, err := downloader.getHongguoVideoTabModel(ctx, videoID)
 	if err != nil && !errors.Is(err, errHongguoPlayerEmpty) {
-		// 新签名链路遇到网络/HTTP 异常时保留旧链路作为兼容回退；空响应是上游
-		// 静默丢弃，旧签名同样拿不到数据，不再重复请求以免拖慢播放解析。
-		result, err = downloader.postHongguoModel(ctx, videoID)
+		// 现行 video_tab 链路异常（如设备注册失败）时保留旧取址链路兼容回退；
+		// 空响应是上游静默丢弃，换旧签名同样拿不到数据，不再重复请求。
+		result, err = downloader.postHongguoModelV2(ctx, videoID)
+		if err != nil && !errors.Is(err, errHongguoPlayerEmpty) {
+			result, err = downloader.postHongguoModel(ctx, videoID)
+		}
 	}
 	if err != nil {
 		return providerMedia{}, err
@@ -82,6 +85,15 @@ func (downloader *Downloader) resolveHongguoModelMedia(ctx context.Context, vide
 	model := hongguoModelAsObject(entry["video_model"])
 	if len(model) == 0 {
 		return providerMedia{}, errors.New("红果取址接口未返回片源入口")
+	}
+	// video_tab 会直接内联完整片源列表，优先使用，省去 fallback_api 二次请求；
+	// 解析仍走既有的解密、密钥派生、清晰度择优与备用节点逻辑。
+	if list := nestedMap(model, "video_list"); len(list) > 0 {
+		var seed []byte
+		if encoded := mapString(model, "key_seed"); encoded != "" {
+			seed, _ = base64.StdEncoding.DecodeString(encoded)
+		}
+		return selectHongguoModelMedia(list, seed)
 	}
 	fallback := hongguoModelFallback(model["fallback_api"])
 	if fallback == "" || !isProviderHTTPMediaURL(fallback) {
