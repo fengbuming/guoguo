@@ -1,83 +1,50 @@
-# 项目长期笔记（精简版 2026-10-19）
+# 项目长期笔记（精简 2026-11-07）
 
-## 项目构成
-- `短剧库/短剧库/` = 完全版（红果/黄果/黄豆三源），端口 **8998**；`果果剧库/` = 红果专用版，端口 **8999**。两仓库均无 git（仅 .gitignore），改前先备份。
-- 构建（必须仓库根）：`C:/Go124/go/bin/go.exe build -o dist/juku.exe .`（Go 1.24.1；env `GOTOOLCHAIN=local GOPROXY=https://goproxy.cn GOSUMDB=off`）。
-- **跨版禁止 cp** `internal/webui/index.html`、`internal/app/provider_media.go`；其余相同文件可直接 cp。下载入口也不同（完全版 `provider_huangguo.go`，专用版 `download_media.go`）。
-- Git：仓库根 `D:/AI/guoguo`，remote `github.com/fengbuming/guoguo`（私有，默认 master）。账号 `fengbuming`。推送必带代理：`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push`（全局配的 10808 无效）。gh 可用。中文路径用 `git -c core.quotepath=false status`。
+## 构成与构建
+- `短剧库/短剧库/` 完全版（红果/黄果/黄豆，8998）；`果果剧库/` 红果专用版（8999）。均无 git，改前备份。
+- 构建（仓库根）：`C:/Go124/go/bin/go.exe build -o dist/juku.exe .`（Go 1.24.1，env `GOTOOLCHAIN=local GOPROXY=https://goproxy.cn GOSUMDB=off`）。
+- **跨版禁止 cp**：`internal/webui/index.html`、`internal/app/provider_media.go`；下载入口不同（完全版 `provider_huangguo.go` / 专用版 `download_media.go`）。前端改动必升 `?v=`。
+- Git 根 `D:/AI/guoguo`，remote `github.com/fengbuming/guoguo`（私有 master），推送必带 `-c http.proxy=http://127.0.0.1:7897`（https 同）。
 
-## admin 密码
-- 存各自 `data/accounts.json`：pbkdf2-sha256 / 600000 轮 / 盐 16B hex / hash 32B hex。`-admin-password` 仅首次启动有效。改已有账户**必须先停服务**再改文件（否则运行中进程回写覆盖），先 .bak。
-- 登录：`GET /api/ui/viewer`（无 cookie 首次无 id，带 guest cookie 再请求一次）→ `X-Juku-Viewer: <id>` + JSON POST `/api/ui/account/login`。
+## 账号 / 登录
+- `data/accounts.json`：pbkdf2-sha256 / 600000 轮 / 盐16B hex / hash32B hex。改已有账户**先停服**再改 + .bak；改密码优先 `POST /api/ui/account/password`（自动吊销旧会话，免停服）。
+- 登录：`GET /api/ui/viewer`（匿名首次无 id，带 guest cookie 再请求）→ `X-Juku-Viewer: <id>` + POST `/api/ui/account/login`。管理端点 POST 前须重新取 viewer（旧 id 会 409），且必须带该头。
+- 必须登录/关闭注册：`POST /api/ui/admin/settings {requireLogin,allowRegistration}`，持久化；入口「用户/账号」页。遗留放行面 `/assets/**`、`/api/emby/*`。无后门，登录限速 10 次/分钟/用户名。
 
-## 红果取流（2026-10-16 攻破：全清晰度 + 全集免登录）
-- App `multi_video_model`：POST `api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/`，body `{"biz_param":{...},"mixed_video_id_map":{"1004":[vid]}}` → `data[vid].video_model.fallback_api`；再 GET（无签名只带 UA）→ video_list + key_seed。
-- 六签名头 x-gorgon(RC4 变体，sdk 常量 **67503104**)/x-khronos/x-ladon/x-argus/x-helios/x-medusa(不需要)。query 必须 python 风格编码（`*!'()` 与空格转大写 %XX）；版本 71332 / 7.1.3.32。
-- URL 解密 `hongguoDecryptSpadeURL`：base64 后头须 `a8 ?? 01 00`，sha512(seed)→sha512(h1||64B常量)取前 32B 作 AES-128-CBC key+IV；spade_a 走减法变体 tag="11"。
-- 代码 `provider_hongguo_model.go` + `_sign.go`（置于 resolveHongguoMedia 首位）；回退 `provider_hongguo_protected.go`（play-info，仅试看集/720p）。参考 Java 在 `_ref/`，探针在 `_hgtest/`。
+## 红果取流
+- `multi_video_model` POST `api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/` → `data[vid].video_model.fallback_api` → GET 得 video_list+key_seed。六签名头（x-gorgon RC4 变体，sdk 常量 67503104 等），query 需 python 风格编码，版本 71332。
+- URL 解密 `hongguoDecryptSpadeURL`（sha512(seed) 派生 AES-128-CBC key+IV；spade_a 减法变体）。代码 `provider_hongguo_model.go`+`_sign.go`，回退 `provider_hongguo_protected.go`；参考 `_ref/`，探针 `_hgtest/`。
 
-## 播放链路修复（2026-10-16~18）
-- 续读重试**白名单** `retryableMediaStatus()`（403/404/410/408/429/5xx 重试；200/400/401/416 不重试）。勿用排除法（会破坏 TestMediaProxyRejectsUnsafeContinuation）。
-- 红果 CDN 单连接只稳传 2–5MB：单节点连败 2 次切 backup_url_1/2，**换节点必须重置 ETag validator**。前端 recoverFromStall + reloadPlayback 兜底，改前端必升 `?v=`。
-- 静默挂起：proxy client 无 Timeout → body.Read 永久阻塞。修复 `stallGuardConn`（Read 前 SetReadDeadline(now+30s) 空闲超时 → ErrDeadlineExceeded → resume()）。完全版挂 `safeDNSDialer.dial()`；专用版用 `network_stall_guard.go` 挂 DialContext。
-- planOnly 语义不可动（预取只解析地址、0 字节传输）。
+## 播放链路要点
+- 续读重试白名单 `retryableMediaStatus()`（403/404/410/408/429/5xx 重试；200/400/401/416 不重试），勿改排除法（破坏 TestMediaProxyRejectsUnsafeContinuation）。
+- 红果 CDN 单连接只稳传 2–5MB：连败 2 次切 backup_url_1/2，**换节点必须重置 ETag validator**。前端 recoverFromStall + reloadPlayback 兜底。
+- 静默挂起修复 `stallGuardConn`（读前 SetReadDeadline +30s；完全版挂 `safeDNSDialer.dial()`，专用版 `network_stall_guard.go` 挂 DialContext）。planOnly 语义不可动。
+- `data/playback-settings.json` 的 `enabled` 是总开关（默认 false → legacy libx264 转码）；本机/线上均已置 true。`directSources` 实测无效，置空。
+- 红果 CENC 探测不出编码 → 已改 `CENCKey` 非空跳过探测直接 remux（解密 + `-c copy`），CPU ~350→0.08 核秒/集；首帧需等整集封装。
+- 清单请求为首片阻塞最多 6s，别退回空 EVENT 清单。remux 首分片即返回；`jobCtx` 不能挂 plan ctx；`cacheMB` 是**磁盘**配额。
 
-## 剧库磁盘缓存（2026-10-19，分支 perf/library-disk-cache）
-- 内存只留精简索引 `dramaEntry`（376B，完整 Drama 720B）；完整记录按 ID 的 FNV-1a 哈希分 **256 片**存 `data/library/records/NNN.json`，索引 `data/library/index.json`。LRU 上限 16 片，脏分片淘汰时就地落盘。
-- 热路径（列表/搜索/排序/统计/封面代理/排行榜/推荐合并）只读索引，零磁盘 IO；索引含 desc/intro（前端本地搜索要用）与单份封面。
-- 保真要点：`drama()` 在有完整记录时以记录为准回填封面与集数（否则 DeepEqual 测试失败）；`applyEntry` **不要**写 Cover/EpisodeCount；`canonicalDramaCover` 无封面时保持 nil 别转成 ""。
-- 旧整文件 `library.json` 首次启动自动迁移，之后不再解析（不删，留作回滚）。`readLibraryCache` 改为优先读分片剧库；CLI 刷新会同步写回分片。
-- 列表响应**必须流式写**：`json.Encoder.Encode` 会先把整个值编进缓冲区再写，整库列表每次多占 ~68MB，且 Go 不立刻还内存（实测请求后 RSS 423MB 且 3 分钟不回落）。用 `writeLibrarySnapshot` 逐条编码 + 8KB 分块写；快照返回的条目必须是副本（编码发生在释放 a.mu 之后）。
-- 简介去重：23,578/27,722 部剧 intro==desc，索引只在两者不同时存 intro，`entryIntro` 读回时补；列表里 intro 用 omitempty 不重复输出。
-- 实测（27,722 部）：常驻堆 74.2 → **19.7 MiB**；空闲 RSS 177.8 → **109.4 MB**；6 次整库请求后峰值 423.6 → **256.6 MB**；`/api/ui/dramas` 50.7MB/0.242s → **28.7MB/0.186s**。
-- 剩余大头：每次列表请求仍复制 10.4MB 条目切片；再要降需把 entries 改成写时复制（不可变快照）。
-- **列表响应已磁盘快照化（2026-10-20，`library_snapshot.go`）**：整库响应按「头字段(排序) + 条目数 + 站源作用域」哈希为键，预渲染 `data/library/snapshot/<key>.json.gz`（保留 6 份），请求期 `ServeContent` + `ETag` + `no-cache`，复访 304。实测 27.4MB → 7.09MB，命中 0.024s（渲染 0.539s）。回落条件：非 GET/HEAD、不收 gzip、entries 为 nil、任何 IO 异常。
-- 封面内存缓存已降到 **8MiB / 256 条**（原 32MiB/512）；响应带 `private,max-age=86400`，重复访问由浏览器缓存。
+## 剧库磁盘缓存 / 内存
+- 索引 `dramaEntry` 常驻 ~19.7MB；完整记录按 FNV-1a 分 256 片存 `data/library/records/NNN.json`，索引 `index.json`，LRU 16 片。旧 `library.json` 首启自动迁移（不删，回滚用）。
+- 保真：`drama()` 以完整记录回填封面集数；`applyEntry` 不写 Cover/EpisodeCount；`canonicalDramaCover` 无封面保持 nil；intro==desc 时索引不重复存。
+- 列表**必须流式写**（复用 Encoder + 8KB 分块），已磁盘快照化 `data/library/snapshot/<key>.json.gz`（ETag/304，保留 6 份）。整库 27.4MB→7.09MB，命中 0.024s。回落：非 GET/HEAD、不收 gzip、entries nil、IO 异常。封面缓存 8MiB/256 条。
+- `configureProcessMemory()`：GOMEMLIMIT=可用45%、≤4GiB 时 GOGC=50；Linux 必须**进程启动前**设 `GODEBUG=madvdontneed=1`（systemd unit 已加），否则 RSS 不降。Windows 只看 private。
+- 测量脚本 `.workbuddy/tmp/mem_probe.py`、`single_probe.py`、`gzip_check.py`、`vps_*.py`（用 `envs/default/Scripts/python.exe` 才有 paramiko）。
 
-## 播放管线（2026-10-20 实测）
+## 启动 / 环境 / 测试
+- 局域网：不带 `-listen`（默认 0.0.0.0）+ `-open=false`，必须后台启动。schtasks：`JukuFull8998`、`JukuPro8999`。ipconfig/netsh 输出 GBK。
+- 全量测试必须 `-skip` 既有失败：TestManualMetadataPriorityValidation（panic 中断整包）、TestEmbyExportPersistentSignedLinksAndSafeArchive、TestEmbySyncAutomaticFollowedImportRefreshAndRestart、TestHongguoSuggestionsPreserveNamesWithoutFetchingDramaMetadata、TestHuangguoBrowserHTTP2CookiesAndNativeIsolation、TestLegacyAnonymousCatalogAndSessionReuse。真实网络集成测试必须 `NewDownloader(cfg)`。
 
-- `data/playback-settings.json` 的 **`enabled` 是总开关**：默认 false → `/api/ui/playback/plan` 恒返回 `legacy/optimization_disabled` → 前端回落 `/stream` 的 libx264 全量转码。已在本机置 `enabled=true`。
-- **`directSources` 实测无效**：6 个源全加进去，`allowPlaybackDirect` 全部不通过（源站无 CORS / 需凭据），`redirect` 不可得；置空反而省掉每次 0.2–3.0s 探测。开启 enabled 后 huangdou/cloudfront/huangguoai/huangju 走**纯 Go 代理（hlsProxy），零 ffmpeg**。
-- 红果因 CENC 加密，`probePlaybackCodecs` 探测不出编码 → 原先被判 `video_codec_unsupported` 回落 legacy **libx264 实时转码**，实测 **238.7% 单核 + 139.2MB RSS / 路**（2 核 VPS 一路即打满）。
-- **已改（2026-10-20，4a57978）**：`CENCKey` 非空时跳过探测，直接 `generatePlayback(processing="remux")` = 解密 + `-c copy`。实测同集 plan 0.67s 出 40 片 fMP4，CPU 约 0.08 核秒/集（原约 350），并发额度从 video(1) 换成 remux(2)。代价：首帧要等整集封装完（0.67–9.11s，看 CDN）。
+## VPS（111.91.25.138 / Debian12 / 2C 800MB / 40GB）
+- 裸二进制 + systemd：`/opt/juku/bin/juku`、`/opt/juku/data`、`/etc/systemd/system/juku.service`（ExecStart `-listen 0.0.0.0:8998 -open=false -data-dir /opt/juku/data -ffmpeg /usr/bin/ffmpeg`，Environment=GODEBUG=madvdontneed=1）。**公网未开放**，SSH 隧道 `ssh -L 8998:127.0.0.1:8998 root@...`。
+- 编译改 ALWAYS 用 `git worktree` 检干净副本 + `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 -trimpath -ldflags="-s -w"`。admin 仅首启 `timeout 40 ./bin/juku -admin-password xxx`，别写进 unit。
+- 迁移只搬 `libraryCache` 对齐的数据；**不迁移** accounts.json / viewer-key / juku.json / ui-state.json / huangguo-session.json。备份 `/opt/juku/backup/<ts>/`，指针 LAST。
+- 容量：播放期 RSS 可达 477MB，800MB 机器建议 cacheMB 128–192、maxSessions 2、maxRemuxJobs 1；`vm.swappiness` 设 10（0 会让 swap 失效）。
+- 播放额度默认：会话4 / 媒体连接8 / remux2 / 音、视频转码各1 / 预备1 / cacheMB 512；超限 429；会话空闲 10 分钟回收。线上现 enabled:true、maxRemuxJobs=2、cacheMB=128、directSources 空。
+- 检索参数是 `q` 不是 keyword，响应 `{data,limited,query,saved,source,total,warning}`。灌流复现：viewer GET×2 拿 id → POST `/api/ui/playback/open` → GET `/api/ui/playback/stream?...`。
+- 同机还有 nginx 1.22.1 + Hysteria2（443/80 default_server）、LE IP 证书；无 ufw/iptables。paramiko `sftp.put` 偶发 ENOENT，改系统文件用 heredoc；`ss` 显示 `*:8998`。
 
-## 启动方式 / 环境
-- 局域网：**不带** -listen（默认 0.0.0.0）+ `-open=false`，必须后台启动。日志显示 127.0.0.1 是 publicURL() 展示逻辑。
-- schtasks：`JukuFull8998`（8998，自启已禁用可手动 run）、`JukuPro8999`（8999 开机自启）；用 PowerShell `*-ScheduledTask`。LAN IP 2026-10-15 仍 192.168.1.6。
-- ipconfig/netsh 输出 GBK（写文件后 python 解码）；PowerShell 的 Get-NetFirewall*/Get-NetIPAddress 本机返回空。
-
-## 测试
-- 既有失败（与改动无关）：TestManualMetadataPriorityValidation（downloader nil → panic 中断整包，**跑全量必须 -skip**）、TestEmbyExportPersistentSignedLinksAndSafeArchive、TestEmbySyncAutomaticFollowedImportRefreshAndRestart、TestHongguoSuggestionsPreserveNamesWithoutFetchingDramaMetadata、TestHuangguoBrowserHTTP2CookiesAndNativeIsolation、TestLegacyAnonymousCatalogAndSessionReuse。
-- 真实网络集成测试必须 `NewDownloader(cfg)`，不能用 `&Downloader{cfg:...}`（limiter/client nil 会 panic）。
-
-## VPS 适配实测（2026-10-19 Windows，8998 完全版）
-- 空闲 RSS 106–186MB；每路 MSE +1–3MB；CPU ≈0.4% 单核 / 每 10Mbit/s 代理吞吐。
-- Native HLS：整集一个 ffmpeg（RSS ~142MB），135s 1080p ~11s CPU（`-c copy`）；占 "video" 额度（默认 1）。
-- 播放额度 `data/playback-settings.json`：会话 4、媒体连接 8、remux 2、音/视频转码各 1、预备 1、封装缓存 512MB；超限 429；会话空闲 10 分钟回收。
-- 1080p 竖屏 4.25Mbit/s → 1.53GB/观看小时；30Mbps ≈5–6 路；1024GB/月 ≈670 观看小时。
-- 结论：2 核富余、1GiB 可用（+2GB swap，首选裸二进制 + systemd，Docker 在 1GiB 偏紧）、40GB 宽裕。
-- 灌流复现：viewer GET 两次拿 id → POST `/api/ui/playback/open` → GET `/api/ui/playback/stream?session=&episode=N&start=0&quality=0&version=0&remux=0`。
-
-## VPS 线上部署（111.91.25.138 / Debian 12 / 2C 800MB / 40GB，已上线）
-
-- 形态：裸二进制 + systemd。二进制 `/opt/juku/bin/juku`，数据 `/opt/juku/data`，单元 `/etc/systemd/system/juku.service`（TZ=Asia/Shanghai、Restart=always、LimitNOFILE=65535）。
-- ExecStart 曾临时改为 `-listen 127.0.0.1:8998` 走 SSH 隧道，但用户随后要求恢复公网直连（白名单未就绪），现为 `-listen 0.0.0.0:8998`（可 sed 切换，改完 daemon-reload + restart）。`-open=false -data-dir /opt/juku/data -ffmpeg /usr/bin/ffmpeg`（ffmpeg 用 apt 装，5.1.9）。**公网已不开放**，用 SSH 隧道访问：`ssh -L 8998:127.0.0.1:8998 root@111.91.25.138` 后开 http://127.0.0.1:8998 。
-- 编译：改 ALWAYS 用 `git worktree` 检出目标提交的干净副本再交叉编译（`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 -trimpath -ldflags="-s -w"`），避免把当前分支 WIP 编进去。
-- admin 初始化只能在首启：`timeout 40 ./bin/juku -listen 127.0.0.1:8998 -admin-password xxx` 生成 `accounts.json` 后杀掉，再交给 systemd；不要写进 unit 文件。
-- 库迁移：master 的 `libraryCache`（dramas/loadedAt/lastError/sources/hongguoApp/providerCatalog）与现有 library.json 对齐，gzip 上传即生效。**不迁移** accounts.json、viewer-key、juku.json、ui-state.json、huangguo-session.json。
-- 挪机注意 swap：`vm.swappiness=0` 会让已有 swap 完全不工作，须写 `/etc/sysctl.d/99-juku.conf` 设 10 并 `sysctl -w`。
-- **容量修正**：播放期 RSS 可达 477MB（封装缓存默认 512MB），远大于本机空闲实测的 106–186MB；800MB 机器仅稳撑 1 路，需在管理后台下调 cacheMB 至 128–192、maxSessions 2、maxRemuxJobs 1。
-- 检索接口参数是 `q` 而非 `keyword`；响应 `{data,limited,query,saved,source,total,warning}`，`limited:true` 为分页截断。
-- 本机无 sshpass/rsync，自动化 SSH 用 Python paramiko（脚本见 `%TEMP%\juku-deploy\ssh_helper.py` / `deploy.py` / `verify.py` / `enable_login.py`）。
-
-## 访问控制（已在线上启用）
-
-- **必须登录 / 关闭注册 / 登录页前置是程序内建能力，不需要改代码**：管理员 POST `/api/ui/admin/settings` `{requireLogin, allowRegistration}`，持久化在 `data/accounts.json`，重启保持；面板入口在「用户/账号」页（`users.js`）。
-- 生效后：匿名 `/` → 302 `/login`；所有 `/api/ui/*` → 401 `login_required`；注册 → 403 `registration_disabled`；`GET /api/ui/viewer` 下发策略供前端判断。
-- 前端 `main.js` 的 `if (app.account.init()) return;` 使登录页模式下**跳过整个主应用初始化**（剧库/下载/追剧/历史/排行榜/设置均不加载）；CSS `.account-page` 隐藏 workspace 与导航，只留登录面板。
-- 遗留放行面：`/assets/**`（登录页依赖）与 `/api/emby/*`（`withAccountAccess` 无条件放行）—— 启用 Emby 集成后后者即成免登录入口，需另行处理。
-- 管理端点两个坑：POST 前重新 `GET /api/ui/viewer` 取 id（登录后 viewer 变更，旧 id 会 409 `viewer_changed`）；POST 必须带 `X-Juku-Viewer` 头，否则 403。匿名首次 viewer 返回 `{"ready":false}`，需二次调用才有 id。
-- **改密码不要手改文件**：用 `POST /api/ui/account/password {password,newPassword}`，免停服且会自动吊销该账号全部旧会话。
-- 安全审计已做（无后门）：注册双重校验、`withAccountAccess` 全覆盖、无硬编码绕过；限速 10 次/分钟/用户名。遗留面只有 `/assets/**`（公开，约 700KB/次匿名访问）与 `/api/emby/*`（本实例 403 不可达）。
-- 运维坑：paramiko `sftp.put` 偶发 ENOENT，改系统文件用 shell heredoc；`ss` 全网卡显示为 `*:8998`，校验监听范围别 grep `0.0.0.0:8998`。
-- VPS 上还跑着 nginx 1.22.1 + Hysteria2 订阅服务（占 443/80 default_server）与一张 6 天期 LE IP 证书；全机无 ufw/iptables 规则。改动 nginx 前注意别影响订阅服务。
+## 播放会话限制（2026-11-07 已修复并上线）
+- 旧版 `MaxSessions=4` 全局计数 + 后台标签心跳每 20s 无限续期 → 单用户被自己的残留会话锁死（429），VPS 连续运行 17 天不重启会持续累积。
+- 修复：`maxSessions=0` = 不限制；新开播放自动回收本 viewer 的闲置/最旧会话；管理员 `POST /api/ui/admin/playback/cleanup` 一键清空；设置面板与播放器 429 错误处均有清理按钮。日志事件 `playback.session_reclaimed` / `sessions_cleared`。
+- 源码备份 `短剧库/短剧库/_backup_playback_20261107/`；线上备份 `/opt/juku/backup/20261107-173933/`（LAST）；本机 `dist/juku.exe` 已换（旧版 `dist/juku.exe.bak-20261107`）。线上仍保留 maxSessions=4，彻底关闭需在面板填 0。
+- 提交 `8b52011`（perf/library-disk-cache，已推送）；线上二进制为从该提交 `git worktree` 干净检出的产物，sha `53c38d08…`（`dist/juku-linux-8b52011`）。
