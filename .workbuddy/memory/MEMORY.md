@@ -21,6 +21,7 @@
 - 静默挂起修复 `stallGuardConn`（读前 SetReadDeadline +30s；完全版挂 `safeDNSDialer.dial()`，专用版 `network_stall_guard.go` 挂 DialContext）。planOnly 语义不可动。
 - `data/playback-settings.json` 的 `enabled` 是总开关（默认 false → legacy libx264 转码）；本机/线上均已置 true。`directSources` 实测无效，置空。
 - 红果 CENC 探测不出编码 → 已改 `CENCKey` 非空跳过探测直接 remux（解密 + `-c copy`），CPU ~350→0.08 核秒/集；首帧需等整集封装。
+- **新建 `hlsProxy` 后必须调 `attachPlaybackAudioTrack(&media, proxy)`**（preparePlaybackMedia / generatePlaybackWithParent / probePlaybackCodecs 三处）。红果受保护源是 DASH 双轨，漏掉就只有视频轨 → 无声且浏览器禁用音量控件（c323825 修）。
 - 清单请求为首片阻塞最多 6s，别退回空 EVENT 清单。remux 首分片即返回；`jobCtx` 不能挂 plan ctx；`cacheMB` 是**磁盘**配额。
 
 ## 剧库磁盘缓存 / 内存
