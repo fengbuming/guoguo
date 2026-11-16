@@ -32,22 +32,33 @@ type hongguoProtectedTrack struct {
 }
 
 type hongguoProtectedPlayInfo struct {
-	Vid             string `json:"vid"`
-	Kid             string `json:"kid"`
-	MainURL         string `json:"main_url"`
-	BackupURL       string `json:"backup_url"`
-	PlayerAccessKey string `json:"player_access_key"`
-	Format          string `json:"format"`
-	CodecType       string `json:"codec_type"`
-	Width           string `json:"width"`
-	Height          string `json:"height"`
-	Definition      string `json:"definition"`
-	Duration        float64 `json:"duration"`
+	Vid             string                `json:"vid"`
+	Kid             string                `json:"kid"`
+	MainURL         string                `json:"main_url"`
+	BackupURL       string                `json:"backup_url"`
+	PlayerAccessKey string                `json:"player_access_key"`
+	Format          string                `json:"format"`
+	CodecType       string                `json:"codec_type"`
+	Width           string                `json:"width"`
+	Height          string                `json:"height"`
+	Definition      string                `json:"definition"`
+	Duration        float64               `json:"duration"`
 	Audio           hongguoProtectedTrack `json:"audio"`
+}
+
+// hongguoLegacyPlayInfo 是网页接口的明文 MP4 回退票：不下发 play_access_key，
+// 也没有分离音轨，只有一个可直接播放/转封装的地址。
+type hongguoLegacyPlayInfo struct {
+	MainURL   string  `json:"main_url"`
+	BackupURL string  `json:"backup_url"`
+	Width     string  `json:"width"`
+	Height    string  `json:"height"`
+	Duration  float64 `json:"duration"`
 }
 
 type hongguoProtectedResponse struct {
 	PlayInfo *hongguoProtectedPlayInfo `json:"play_info"`
+	Legacy   *hongguoLegacyPlayInfo    `json:"legacy_play_info"`
 	Error    string                    `json:"error"`
 }
 
@@ -75,10 +86,17 @@ func hongguoProtectedMediaFromResponse(body []byte) (providerMedia, error) {
 	info := response.PlayInfo
 	if info == nil || !isProviderHTTPMediaURL(strings.TrimSpace(info.MainURL)) {
 		if strings.TrimSpace(response.Error) == "protected_playback_unavailable" {
+			// 部分分集只下发 legacy_play_info（明文 MP4），与 play_info 互斥。
+			if media, ok := hongguoLegacyMedia(response.Legacy); ok {
+				return media, nil
+			}
 			return providerMedia{}, errHongguoProtectedLocked
 		}
 		if message := strings.TrimSpace(response.Error); message != "" {
 			return providerMedia{}, fmt.Errorf("红果受保护播放不可用：%s", message)
+		}
+		if media, ok := hongguoLegacyMedia(response.Legacy); ok {
+			return media, nil
 		}
 		return providerMedia{}, errors.New("红果受保护播放接口未返回可用的媒体地址")
 	}
@@ -176,7 +194,8 @@ func (d *Downloader) fetchHongguoProtectedText(ctx context.Context, payload []by
 			continue
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			// 站点用 4xx + JSON 错误体表达“该集需要登录或付费”，交给解析层给出明确原因，不再重试。
+			// 站点用 4xx/5xx + JSON 错误体表达“该集需要登录、付费或资源不可用”，
+			// 交给解析层给出明确原因（如 encrypted_resource_unavailable），不再重试。
 			if isHongguoProtectedErrorStatus(response.StatusCode) && json.Valid(body) && bytes.Contains(body, []byte(`"error"`)) {
 				return string(body), nil
 			}
@@ -188,12 +207,43 @@ func (d *Downloader) fetchHongguoProtectedText(ctx context.Context, payload []by
 	return "", lastErr
 }
 
+// hongguoLegacyMedia 把网页接口的 legacy_play_info 转成可直接播放的明文媒体。
+// 该通道不含 player_access_key，因此不设置 CENCKey/AudioURL，按普通 MP4 处理。
+func hongguoLegacyMedia(info *hongguoLegacyPlayInfo) (providerMedia, bool) {
+	if info == nil {
+		return providerMedia{}, false
+	}
+	mainURL := strings.TrimSpace(info.MainURL)
+	if !isProviderHTTPMediaURL(mainURL) {
+		return providerMedia{}, false
+	}
+	height, _ := strconv.Atoi(strings.TrimSpace(info.Height))
+	width, _ := strconv.Atoi(strings.TrimSpace(info.Width))
+	quality := height
+	if width > 0 && (quality == 0 || width < quality) {
+		quality = width
+	}
+	media := providerMedia{
+		URL:      mainURL,
+		Referer:  hongguoBaseURL + "/",
+		Duration: time.Duration(info.Duration * float64(time.Second)),
+		Quality:  quality,
+	}
+	if backup := strings.TrimSpace(info.BackupURL); isProviderHTTPMediaURL(backup) && backup != mainURL {
+		variant := media
+		variant.Variants = nil
+		media.Variants = []providerMedia{variant}
+	}
+	return media, true
+}
+
 func isHongguoProtectedErrorStatus(status int) bool {
 	switch status {
 	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		// 限流/超时属于可重试状态，不能把错误体当成终态结论。
 		return false
 	}
-	return status >= 400 && status < 500
+	return status >= 400
 }
 
 func dramaSource(drama Drama) string {

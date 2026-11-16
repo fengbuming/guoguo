@@ -33,9 +33,11 @@ import (
 //
 // 现行顺序为：device_register -> GET /reading/bookapi/video_tab/
 // multi_video_model/v1/（7.3.9.32 设备档案 + 551 Argus/Ladon 签名）。上游对
-// 匿名取址还有概率性静默丢弃，因此按参考实现做 pacing + 全新身份重试，最后一次
-// 改用 7.4.3.32 档案 + gzip 请求体的旧 POST 兼容路径。
-// 参考 2026-11 仍活跃的公开实现 jackotom/hongguo-drama（GPL-3.0-only）。
+// 匿名取址还有概率性静默丢弃，因此按参考实现做 pacing + 全新身份重试，并在
+// 同一身份下轮询多个集群的 /novel/player/multi_video_model/player/v1，最后落到
+// 番茄短剧通道（/novel/player/video_model/v1/）。
+// 参考 2026-11 仍活跃的公开实现 jackotom/hongguo-drama（GPL-3.0-only）、
+// zfdang/hongguo-open-player（GPL-3.0-only）。
 //
 // 本文件只负责「注册身份 + 取回模型」。模型的片源解析、key_seed 解密、
 // spade_a 派生、H.264 优先与清晰度/体积择优、备用 CDN 节点，以及播放、
@@ -46,6 +48,12 @@ const (
 	hongguoVideoTabVersionCode = "73932"
 	hongguoVideoTabVersionName = "7.3.9.32"
 	hongguoVideoTabUserAgent   = "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+
+	// hongguoModelPlayerPath 是现行取址路径（比旧的 /v1/ 多一段 player）。
+	hongguoModelPlayerPath = "/novel/player/multi_video_model/player/v1"
+	// hongguoShortplayPath 是番茄短剧通道，UA 与 aid 与红果不同。
+	hongguoShortplayPath      = "/novel/player/video_model/v1/"
+	hongguoShortplayUserAgent = "com.dragon.read"
 
 	hongguoRegisterUserAgent = "com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
 	hongguoDeviceRegisterURL = "https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1"
@@ -208,6 +216,22 @@ func hongguoVideoTabQuery(identity hongguoPlaybackIdentity, videoID string, now 
 	return strings.Join(parts, "&")
 }
 
+// hongguoShortplayQuery 构造番茄短剧通道 query（aid 1967 / com.dragon.read）。
+func hongguoShortplayQuery(identity hongguoPlaybackIdentity) string {
+	pairs := [][2]string{
+		{"iid", identity.InstallID}, {"device_id", identity.DeviceID},
+		{"aid", "1967"}, {"app_name", "novelapp"},
+		{"version_code", "72132"}, {"version_name", "7.2.1.32"},
+		{"device_platform", "android"}, {"device_brand", "Xiaomi"},
+		{"os_version", "13"}, {"cdid", identity.CDID},
+	}
+	parts := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		parts = append(parts, hongguoPlayerEncode(pair[0])+"="+hongguoPlayerEncode(pair[1]))
+	}
+	return strings.Join(parts, "&")
+}
+
 // 上游对同一出口的高频匿名取址会静默丢弃；参考实现同样用全局 pacing
 // 串行化播放取址，且设备身份可能是一次性的。
 var (
@@ -234,75 +258,95 @@ func hongguoVideoTabPace(ctx context.Context) error {
 	return nil
 }
 
-// getHongguoVideoTabModel 依次尝试 video_tab GET（全新注册身份两次）与
-// 7.4.3.32 gzip 旧 POST；仅「静默丢弃」才继续，其余错误交给外层兼容回退。
+// hongguoModelRouteKind 区分取址通道类型。
+type hongguoModelRouteKind int
+
+const (
+	// hongguoRouteVideoTab：GET /reading/bookapi/video_tab/…（7.3.9.32 设备档案）。
+	hongguoRouteVideoTab hongguoModelRouteKind = iota
+	// hongguoRouteMultiPlayer：POST /novel/player/multi_video_model/player/v1（现行 App 路径）。
+	hongguoRouteMultiPlayer
+	// hongguoRouteMultiLegacy：POST /novel/player/multi_video_model/v1/（旧路径，保留兼容）。
+	hongguoRouteMultiLegacy
+	// hongguoRouteShortplay：POST /novel/player/video_model/v1/（番茄短剧通道）。
+	hongguoRouteShortplay
+)
+
+type hongguoModelRoute struct {
+	kind hongguoModelRouteKind
+	base string
+}
+
+// hongguoModelRoutes 是取址候选通道，按顺序尝试：主集群 video_tab -> 多集群
+// 现行取址路径 -> 旧路径 -> 番茄短剧通道。上游会按集群或出口概率性静默丢弃，
+// 串行轮询多个域名比死盯单一域名更容易成功。
+var hongguoModelRoutes = []hongguoModelRoute{
+	{kind: hongguoRouteVideoTab, base: hongguoPlayerHostPrimary},
+	{kind: hongguoRouteMultiPlayer, base: "https://reading.snssdk.com"},
+	{kind: hongguoRouteMultiPlayer, base: "https://api5-normal-sinfonlinea.fqnovel.com"},
+	{kind: hongguoRouteMultiPlayer, base: "https://api5-normal-lq.fqnovel.com"},
+	{kind: hongguoRouteMultiPlayer, base: "https://is.snssdk.com"},
+	{kind: hongguoRouteMultiPlayer, base: "https://api5-normal-hl.fqnovel.com"},
+	{kind: hongguoRouteMultiLegacy, base: hongguoPlayerHostPrimary},
+	{kind: hongguoRouteShortplay, base: "https://api3-normal-sinfonlinea.fqnovel.com"},
+}
+
+// getHongguoVideoTabModel 用全新注册的设备身份轮询全部候选通道。
+// 仅「静默丢弃」（HTTP 200 + 0 字节）才继续换下一个通道；其余错误直接返回，
+// 交给外层兼容回退，避免在上游明确拒绝时反复重试。两轮身份都失败才放弃。
 func (downloader *Downloader) getHongguoVideoTabModel(ctx context.Context, videoID string) (map[string]any, error) {
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	for round := 0; round < 2; round++ {
 		if err := hongguoVideoTabPace(ctx); err != nil {
 			return nil, err
 		}
 		identity, err := downloader.registerHongguoPlaybackDevice(ctx)
 		if err != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
 			return nil, err
 		}
-		result, err := downloader.hongguoVideoTabOnce(ctx, identity, videoID, attempt == 3)
-		if err == nil {
-			return result, nil
-		}
-		lastErr = err
-		if !errors.Is(err, errHongguoPlayerEmpty) {
-			break
+		for _, route := range hongguoModelRoutes {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			result, err := downloader.hongguoModelRouteOnce(ctx, identity, videoID, route)
+			if err == nil {
+				return result, nil
+			}
+			lastErr = err
+			if !errors.Is(err, errHongguoPlayerEmpty) {
+				return nil, err
+			}
 		}
 	}
 	return nil, lastErr
 }
 
-// hongguoVideoTabOnce 发一次取址请求。legacy 为 true 时用 7.4.3.32 档案 +
-// gzip 请求体的旧 POST 兼容路径，否则用 7.3.9.32 档案的 video_tab GET。
-func (downloader *Downloader) hongguoVideoTabOnce(ctx context.Context, identity hongguoPlaybackIdentity,
-	videoID string, legacy bool) (map[string]any, error) {
-	var body []byte
-	method, path, userAgent := http.MethodGet, hongguoVideoTabPath, hongguoVideoTabUserAgent
-	if legacy {
-		method, path, userAgent = http.MethodPost, hongguoModelPath, hongguoPlayerUserAgent
-		payload, err := json.Marshal(map[string]any{
-			"biz_param": map[string]any{
-				"detail_page_version":       0,
-				"device_level":              3,
-				"disable_digg_stat":         false,
-				"need_all_video_definition": true,
-				"need_mp4_align":            false,
-				"use_os_player":             false,
-				"use_server_dns":            false,
-				"video_platform":            1024,
-			},
-			"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
-		})
-		if err != nil {
-			return nil, err
-		}
-		var compressed bytes.Buffer
-		writer := gzip.NewWriter(&compressed)
-		if _, err := writer.Write(payload); err != nil {
-			writer.Close()
-			return nil, err
-		}
-		if err := writer.Close(); err != nil {
-			return nil, err
-		}
-		body = compressed.Bytes()
+// hongguoModelRouteOnce 按通道类型发一次取址请求。
+func (downloader *Downloader) hongguoModelRouteOnce(ctx context.Context, identity hongguoPlaybackIdentity,
+	videoID string, route hongguoModelRoute) (map[string]any, error) {
+	switch route.kind {
+	case hongguoRouteVideoTab:
+		return downloader.hongguoVideoTabGet(ctx, identity, videoID, route.base)
+	case hongguoRouteShortplay:
+		return downloader.hongguoShortplayModel(ctx, identity, videoID, route.base)
+	default:
+		return downloader.hongguoMultiModelPost(ctx, identity, videoID, route.base,
+			route.kind == hongguoRouteMultiLegacy)
 	}
-	var reader io.Reader
-	if legacy {
-		reader = bytes.NewReader(body)
-	}
-	request, err := http.NewRequestWithContext(ctx, method,
-		hongguoPlayerHostPrimary+path, reader)
+}
+
+// hongguoVideoTabGet 用 7.3.9.32 设备档案发 GET /reading/bookapi/video_tab/…
+func (downloader *Downloader) hongguoVideoTabGet(ctx context.Context, identity hongguoPlaybackIdentity,
+	videoID, base string) (map[string]any, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(base, "/")+hongguoVideoTabPath, nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("User-Agent", hongguoVideoTabUserAgent)
 	request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
 	request.Header.Set("sdk-version", "2")
 	request.Header.Set("x-xs-from-web", "0")
@@ -310,30 +354,152 @@ func (downloader *Downloader) hongguoVideoTabOnce(ctx context.Context, identity 
 	request.Header.Set("x-tt-dt", "")
 	request.Header.Set("x-tt-store-region", "cn")
 	request.Header.Set("x-tt-store-region-src", "did")
+	request.Header.Set("passport-sdk-version", "50561")
+	request.Header.Set("x-tt-request-tag", "t=0;n=0")
+
+	response, err := downloader.doPreparedCatalogRequest(request, 10*time.Second, func(prepared *http.Request) {
+		now := time.Now()
+		prepared.URL.RawQuery = hongguoVideoTabQuery(identity, videoID, now)
+		// GET 无请求体：551 签名的 stub 按空 body 计算。
+		signHongguoPlayerRequest(prepared, nil, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return hongguoVideoTabResponse(request, response)
+}
+
+// hongguoMultiModelPost 用 7.4.3.32 档案发 POST 取址请求，请求体 gzip。
+// legacy 为 true 时走旧的 /v1/ 路径且不带 dr_scene，其余走现行 /player/v1。
+func (downloader *Downloader) hongguoMultiModelPost(ctx context.Context, identity hongguoPlaybackIdentity,
+	videoID, base string, legacy bool) (map[string]any, error) {
+	payload := map[string]any{
+		"biz_param": map[string]any{
+			"detail_page_version":       0,
+			"device_level":              3,
+			"disable_digg_stat":         false,
+			"need_all_video_definition": true,
+			"need_mp4_align":            false,
+			"use_os_player":             false,
+			"use_server_dns":            false,
+			"video_platform":            1024,
+		},
+		"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
+	}
+	if !legacy {
+		// 现行路径要求标明取址场景为播放器，否则上游按空响应丢弃。
+		payload["dr_scene"] = "player"
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(encoded); err != nil {
+		writer.Close()
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	body := compressed.Bytes()
+
+	path := hongguoModelPlayerPath
 	if legacy {
-		request.Header.Set("passport-sdk-version", "5051452")
-		request.Header.Set("Content-Type", "application/json; charset=UTF-8")
-		request.Header.Set("Content-Encoding", "gzip")
+		path = hongguoModelPath
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(base, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("User-Agent", hongguoPlayerUserAgent)
+	request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
+	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	request.Header.Set("Content-Encoding", "gzip")
+	request.Header.Set("sdk-version", "2")
+	request.Header.Set("passport-sdk-version", "5051452")
+	request.Header.Set("x-xs-from-web", "0")
+	request.Header.Set("x-ss-dp", "8662")
+	request.Header.Set("x-tt-dt", "")
+	request.Header.Set("x-tt-store-region", "cn")
+	request.Header.Set("x-tt-store-region-src", "did")
+	if legacy {
 		request.Header.Set("Connection", "close")
 	} else {
-		request.Header.Set("passport-sdk-version", "50561")
 		request.Header.Set("x-tt-request-tag", "t=0;n=0")
 	}
 
 	response, err := downloader.doPreparedCatalogRequest(request, 10*time.Second, func(prepared *http.Request) {
 		now := time.Now()
-		if legacy {
-			prepared.URL.RawQuery = hongguoPlayerQuery(identity.InstallID, identity.DeviceID, identity.CDID, nil, now)
-		} else {
-			prepared.URL.RawQuery = hongguoVideoTabQuery(identity, videoID, now)
-		}
-		// GET 无请求体：551 签名的 stub 按空 body 计算；POST 按 gzip 后的字节计算。
+		prepared.URL.RawQuery = hongguoPlayerQuery(identity.InstallID, identity.DeviceID, identity.CDID, nil, now)
+		// POST 的 stub 按 gzip 后的字节计算，与服务端解压前一致。
 		signHongguoPlayerRequest(prepared, body, now)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return hongguoVideoTabResponse(request, response)
+}
+
+// hongguoShortplayModel 走番茄短剧通道（com.dragon.read / aid 1967），
+// 部分集在上游会作为独立出口返回片源，作为红果取址的最后一条 App 通道。
+func (downloader *Downloader) hongguoShortplayModel(ctx context.Context, identity hongguoPlaybackIdentity,
+	videoID, base string) (map[string]any, error) {
+	payload, err := json.Marshal(map[string]any{
+		"video_id":     videoID,
+		"content_type": 1004,
+		"biz_param": map[string]any{
+			"detail_page_version":       0,
+			"device_level":              3,
+			"disable_digg_stat":         false,
+			"disable_video_relate_book": false,
+			"from_video_id":             "",
+			"need_all_video_definition": true,
+			"need_mp4_align":            false,
+			"source":                    4,
+			"use_os_player":             false,
+			"use_server_dns":            false,
+			"video_platform":            3,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(base, "/")+hongguoShortplayPath, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("User-Agent", hongguoShortplayUserAgent)
+	request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
+	request.Header.Set("Content-Type", "application/json; charset=utf-8")
+	request.Header.Set("sdk-version", "2")
+
+	response, err := downloader.doPreparedCatalogRequest(request, 10*time.Second, func(prepared *http.Request) {
+		now := time.Now()
+		prepared.URL.RawQuery = hongguoShortplayQuery(identity)
+		signHongguoPlayerRequest(prepared, payload, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, err := hongguoVideoTabResponse(request, response)
+	if err != nil {
+		return nil, err
+	}
+	// 与 multi_video_model 的 data[vid] 结构对齐，后续解析无需区分通道。
+	data := nestedMap(result, "data")
+	if len(data) == 0 {
+		return nil, errors.New("红果短剧通道未返回有效数据")
+	}
+	if entry := nestedMap(data, videoID); len(entry) == 0 {
+		if model := nestedMap(data, "video_model"); len(model) > 0 {
+			data[videoID] = map[string]any{"video_model": model}
+		}
+	}
+	return result, nil
 }
 
 // hongguoVideoTabResponse 读取响应并把 data.video_model_data 规范化进 data，

@@ -244,8 +244,12 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if apiErr == nil {
 		return media, nil
 	}
-	return providerMedia{}, fmt.Errorf("App 取址失败：%v；红果受保护取流失败：%v；App 老路取流失败：%v；网页取流失败：%v；备用取流失败：%w",
-		publicError(modelErr), publicError(protectedErr), publicError(nativeErr), publicError(pageErr), apiErr)
+	hint := ""
+	if errors.Is(modelErr, errHongguoPlayerEmpty) {
+		hint = "（红果取址接口对本机全部集群返回空响应，属上游临时限制，稍后重试或更换网络更有效）"
+	}
+	return providerMedia{}, fmt.Errorf("App 取址失败%s：%v；红果受保护取流失败：%v；App 老路取流失败：%v；网页取流失败：%v；备用取流失败：%w",
+		hint, publicError(modelErr), publicError(protectedErr), publicError(nativeErr), publicError(pageErr), apiErr)
 }
 
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
