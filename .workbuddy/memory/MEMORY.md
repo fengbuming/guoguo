@@ -54,6 +54,7 @@
 - 根因①：搜索页 2026-11-13 改 CSR（X-Modernjs-Render: client），HTML 无 routerData → 综合搜索必失败。改走匿名 JSON `GET hongguoduanju.com/api/search/result?aid=8662&query=&page=`（≤3 页），旧 HTML 解析兜底。
 - 根因②：联想新形态——部分剧在 `word_type=title`、video_data 空、编号在 `keyword`。名称匹配改白名单（short_play_name/title/album）+ 编号（video_data.series_id 或 keyword，≥6 位纯数字）；common_query 哈希/actor_name 拒收。
 - **新 JSON 解码必须 UseNumber**：19 位编号 float64 舍入 → 相邻季 ID 撞值被去重吞掉（丢 25/32 季的坑）。线上现返回字符串属防御。
+- **搜索接口有「热门兜底流」陷阱**：`query` 命中不足时上游返回 95~108 部无关热剧且 totalCount 同步变成兜底条数（07cf15a 起按标题相关性过滤 + 首页全兜底则不分页）。联想结果按「LCS≥2 且含中日韩字符」过滤，别退回「整包照收」。
 - 两版同步 `provider_hongguo_search.go`；线上二进制 sha `e2815b17…`（`dist/juku-linux-7e553c6`），备份 `/opt/juku/backup/20261116-191505/`。VPS 匿名搜索 401（requireLogin）→ 用 Linux 探针二进制直测通过。
 - 教训：勿对整个 internal/app 跑 gofmt -w（重排 + autocrlf 幻影 M）；幻影 M 用 `git add` 内容相同归一。8999 专用版仅本机更新，未上 VPS。
 
