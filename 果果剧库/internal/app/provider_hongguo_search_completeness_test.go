@@ -22,7 +22,7 @@ const hongguoSeasonSearchTitle = "普通弓箭手？我能无限叠加攻击力"
 var hongguoSeasonSearchIDs = []string{"7648238378667740184", "7660841363813960729", "7668626435891809342", "7676092957392374846", "7680168711512132633"}
 var hongguoSeasonSearchCounts = []int{60, 77, 74, 108, 117}
 
-func hongguoSearchCompletenessFixtures() (string, string) {
+func hongguoSearchCompletenessFixtures() (string, string, string) {
 	var seasons, names, rows []any
 	for i, id := range hongguoSeasonSearchIDs {
 		title := hongguoSeasonSearchTitle + []string{"", "第二季", "第三季", "第四季", "第五季"}[i]
@@ -41,23 +41,30 @@ func hongguoSearchCompletenessFixtures() (string, string) {
 		names = append(names, map[string]any{"name": fmt.Sprintf("其他名称%d", i), "word_type": "short_play_name", "video_data": map[string]any{"series_id": json.Number(id), "series_title": fmt.Sprintf("其他名称%d", i)}})
 	}
 	names = append(names, names[1],
-		map[string]any{"name": "无限叠加攻击小说", "word_type": "title", "keyword": "7358413860274965529", "video_data": map[string]any{"series_id": "7358413860274965529"}},
+		// 2026-11 新格式：title 词条编号记在 keyword、video_data 为空；
+		// short_play_name 也会只给 keyword（第七季实测如此）。
+		map[string]any{"name": "无限叠加攻击小说", "word_type": "title", "keyword": "7358413860274965529"},
 		map[string]any{"name": hongguoSeasonSearchTitle + "第六季", "word_type": "short_play_name", "keyword": "7681547176396213272"},
 		map[string]any{"name": "没有剧集元数据", "word_type": "short_play_name", "keyword": "7000000000000000999", "video_data": map[string]any{"episode_cnt": 10}},
+		// 白名单之外的数字编号（榜单/演员）不应成为剧目。
+		map[string]any{"name": "叠加攻击榜单", "word_type": "common_query", "keyword": "1000000000000000001"},
+		map[string]any{"name": "演员词条", "word_type": "actor_name", "keyword": "1000000000000000002"},
 	)
+	// 2026-11 起综合搜索走匿名 JSON 接口 /api/search/result；旧 HTML 页面兜底。
+	api, _ := json.Marshal(map[string]any{"searchList": rows, "totalCount": 203, "hasMore": false})
 	page, _ := json.Marshal(map[string]any{"loaderData": map[string]any{"search_(keyword)/page": map[string]any{"query": hongguoSeasonSearchQuery, "isSuccess": true, "totalCount": 203, "searchList": rows}}})
 	suggestions, _ := json.Marshal(map[string]any{"suggest_list": names})
-	return "<script>window._ROUTER_DATA=" + string(page) + "</script>", string(suggestions)
+	return string(api), "<script>window._ROUTER_DATA=" + string(page) + "</script>", string(suggestions)
 }
 
 func TestHongguoSearchCompletesMissingSeasonsBeyondFirstTen(t *testing.T) {
-	page, names := hongguoSearchCompletenessFixtures()
+	api, _, names := hongguoSearchCompletenessFixtures()
 	var pageCalls, nameCalls atomic.Int32
 	d := rankingTestDownloader(t, func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {
-		case "/search/" + hongguoSeasonSearchQuery:
+		case "/api/search/result":
 			pageCalls.Add(1)
-			return rankingHTTPResponse(r, 200, page), nil
+			return rankingHTTPResponse(r, 200, api), nil
 		case "/incent_resource/suggestion":
 			nameCalls.Add(1)
 			if q := r.URL.Query(); q.Get("count") != "50" || q.Get("query") != hongguoSeasonSearchQuery || q.Get("app_id") != "8662" {
@@ -70,7 +77,7 @@ func TestHongguoSearchCompletesMissingSeasonsBeyondFirstTen(t *testing.T) {
 		}
 	})
 	result, err := d.searchHongguoDramas(context.Background(), hongguoSeasonSearchQuery)
-	if err != nil || len(result.Dramas) != 27 || result.Total != 203 || !result.Limited || result.Warning != "" {
+	if err != nil || len(result.Dramas) != 30 || result.Total != 203 || !result.Limited || result.Warning != "" {
 		t.Fatalf("wrong search coverage: %d / %d, limited=%v warning=%q err=%v", len(result.Dramas), result.Total, result.Limited, result.Warning, err)
 	}
 	byID := map[string]Drama{}
@@ -88,23 +95,29 @@ func TestHongguoSearchCompletesMissingSeasonsBeyondFirstTen(t *testing.T) {
 			t.Errorf("missing/corrupt season %d: ID %s, episodes %s", i+1, id, got)
 		}
 	}
+	// keyword 兜底的新格式词条应成为结果；白名单之外的编号不应入选。
 	for _, id := range []string{"7358413860274965529", "7681547176396213272", "7000000000000000999"} {
+		if _, found := byID["hongguo:"+id]; !found {
+			t.Error("keyword-backed candidate was dropped", id)
+		}
+	}
+	for _, id := range []string{"1000000000000000001", "1000000000000000002"} {
 		if _, found := byID["hongguo:"+id]; found {
-			t.Error("novel or unverified candidate became a drama", id)
+			t.Error("non-drama suggestion became a drama", id)
 		}
 	}
 
-	result.Dramas[0].Title, result.Dramas[0].Tags[0] = "改动", "改动"
+	result.Dramas[1].Title, result.Dramas[1].Tags[0] = "改动", "改动"
 	result, err = d.searchHongguoDramas(context.Background(), " "+hongguoSeasonSearchQuery+" ")
-	if err != nil || result.Dramas[0].Title == "改动" || result.Dramas[0].Tags[0] == "改动" || pageCalls.Load() != 1 || nameCalls.Load() != 1 {
+	if err != nil || result.Dramas[1].Title == "改动" || result.Dramas[1].Tags[0] == "改动" || pageCalls.Load() != 1 || nameCalls.Load() != 1 {
 		t.Fatal("combined search cache was not isolated or reused", err, pageCalls.Load(), nameCalls.Load())
 	}
 }
 
 func TestHongguoSearchKeepsIdenticalTitlesWithDifferentIDs(t *testing.T) {
 	d := rankingTestDownloader(t, func(r *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(r.URL.Path, "/search/") {
-			return rankingHTTPResponse(r, 200, `<script>window._ROUTER_DATA={"loaderData":{"search_(keyword)/page":{"query":"同名","isSuccess":true,"totalCount":0,"searchList":[]}}}</script>`), nil
+		if r.URL.Path == "/api/search/result" {
+			return rankingHTTPResponse(r, 200, `{"searchList":[],"totalCount":0,"hasMore":false}`), nil
 		}
 		return rankingHTTPResponse(r, 200, `{"suggest_list":[{"name":"同名","word_type":"short_play_name","video_data":{"series_id":7668626435891809342}},{"name":"同名","word_type":"short_play_name","video_data":{"series_id":7680168711512132633}}]}`), nil
 	})
@@ -117,13 +130,16 @@ func TestHongguoSearchKeepsIdenticalTitlesWithDifferentIDs(t *testing.T) {
 func TestHongguoSearchPartialFailureRetainsResultsAndAllowsRetry(t *testing.T) {
 	for _, broken := range []string{"page", "names"} {
 		t.Run(broken, func(t *testing.T) {
-			page, names := hongguoSearchCompletenessFixtures()
+			api, page, names := hongguoSearchCompletenessFixtures()
 			var failed atomic.Bool
 			failed.Store(true)
 			d := rankingTestDownloader(t, func(r *http.Request) (*http.Response, error) {
-				isPage := strings.HasPrefix(r.URL.Path, "/search/")
+				isPage := r.URL.Path == "/api/search/result" || strings.HasPrefix(r.URL.Path, "/search/")
 				if failed.Load() && (isPage == (broken == "page")) {
 					return rankingHTTPResponse(r, 200, `{}`), nil
+				}
+				if r.URL.Path == "/api/search/result" {
+					return rankingHTTPResponse(r, 200, api), nil
 				}
 				if isPage {
 					return rankingHTTPResponse(r, 200, page), nil
@@ -136,7 +152,7 @@ func TestHongguoSearchPartialFailureRetainsResultsAndAllowsRetry(t *testing.T) {
 			}
 			failed.Store(false)
 			result, err = d.searchHongguoDramas(context.Background(), hongguoSeasonSearchQuery)
-			if err != nil || len(result.Dramas) != 27 || result.Warning != "" {
+			if err != nil || len(result.Dramas) != 30 || result.Warning != "" {
 				t.Fatal("retry did not complete the failed search branch", err)
 			}
 		})
@@ -158,7 +174,7 @@ func TestHongguoSearchFailuresDoNotBecomeEmptySuccess(t *testing.T) {
 }
 
 func TestHongguoSearchConcurrentRequestsShareBothBranches(t *testing.T) {
-	page, names := hongguoSearchCompletenessFixtures()
+	api, _, names := hongguoSearchCompletenessFixtures()
 	var calls atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
 	d := rankingTestDownloader(t, func(r *http.Request) (*http.Response, error) {
@@ -170,8 +186,8 @@ func TestHongguoSearchConcurrentRequestsShareBothBranches(t *testing.T) {
 		case <-r.Context().Done():
 			return nil, r.Context().Err()
 		}
-		if strings.HasPrefix(r.URL.Path, "/search/") {
-			return rankingHTTPResponse(r, 200, page), nil
+		if r.URL.Path == "/api/search/result" {
+			return rankingHTTPResponse(r, 200, api), nil
 		}
 		return rankingHTTPResponse(r, 200, names), nil
 	})
@@ -180,7 +196,7 @@ func TestHongguoSearchConcurrentRequestsShareBothBranches(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			if result, err := d.searchHongguoDramas(context.Background(), hongguoSeasonSearchQuery); err != nil || len(result.Dramas) != 27 {
+			if result, err := d.searchHongguoDramas(context.Background(), hongguoSeasonSearchQuery); err != nil || len(result.Dramas) != 30 {
 				t.Error("concurrent search failed", err)
 			}
 		}()
@@ -194,7 +210,7 @@ func TestHongguoSearchConcurrentRequestsShareBothBranches(t *testing.T) {
 }
 
 func TestHongguoSearchCanceledOwnerDoesNotStrandAnotherBrowser(t *testing.T) {
-	page, names := hongguoSearchCompletenessFixtures()
+	api, _, names := hongguoSearchCompletenessFixtures()
 	type ownerKey struct{}
 	var calls atomic.Int32
 	started := make(chan struct{})
@@ -206,8 +222,8 @@ func TestHongguoSearchCanceledOwnerDoesNotStrandAnotherBrowser(t *testing.T) {
 			return nil, r.Context().Err()
 		}
 		calls.Add(1)
-		if strings.HasPrefix(r.URL.Path, "/search/") {
-			return rankingHTTPResponse(r, 200, page), nil
+		if r.URL.Path == "/api/search/result" {
+			return rankingHTTPResponse(r, 200, api), nil
 		}
 		return rankingHTTPResponse(r, 200, names), nil
 	})
@@ -219,7 +235,7 @@ func TestHongguoSearchCanceledOwnerDoesNotStrandAnotherBrowser(t *testing.T) {
 	waiter := make(chan error, 1)
 	go func() {
 		result, err := d.searchHongguoDramas(context.Background(), hongguoSeasonSearchQuery)
-		if err == nil && len(result.Dramas) != 27 {
+		if err == nil && len(result.Dramas) != 30 {
 			err = fmt.Errorf("wrong number of results: %d", len(result.Dramas))
 		}
 		waiter <- err
@@ -234,10 +250,10 @@ func TestHongguoSearchCanceledOwnerDoesNotStrandAnotherBrowser(t *testing.T) {
 }
 
 func TestLibrarySearchCompletenessResponseAndPersistence(t *testing.T) {
-	page, names := hongguoSearchCompletenessFixtures()
+	api, _, names := hongguoSearchCompletenessFixtures()
 	d := rankingTestDownloader(t, func(r *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(r.URL.Path, "/search/") {
-			return rankingHTTPResponse(r, 200, page), nil
+		if r.URL.Path == "/api/search/result" {
+			return rankingHTTPResponse(r, 200, api), nil
 		}
 		return rankingHTTPResponse(r, 200, names), nil
 	})
@@ -250,7 +266,7 @@ func TestLibrarySearchCompletenessResponseAndPersistence(t *testing.T) {
 		Limited bool    `json:"limited"`
 		Saved   bool    `json:"saved"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != 200 || response.Query != hongguoSeasonSearchQuery || len(response.Data) != 27 || !response.Saved || !response.Limited || len(a.dramas) != 27 {
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != 200 || response.Query != hongguoSeasonSearchQuery || len(response.Data) != 30 || !response.Saved || !response.Limited || len(a.dramas) != 30 {
 		t.Fatal("search response/import lost completed results", w.Code, err)
 	}
 }

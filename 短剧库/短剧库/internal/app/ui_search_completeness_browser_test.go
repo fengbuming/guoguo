@@ -27,7 +27,7 @@ func TestSearchCompletenessBrowserFixture(t *testing.T) {
 	a.cond = sync.NewCond(&a.mu)
 	a.statePath = filepath.Join(a.cfg.dataDirectory(), "ui-state.json")
 	a.cfg.adminUsername, a.cfg.adminPassword, a.cfg.adminPasswordExplicit = "admin", accountFixturePassword, true
-	page, names := hongguoSearchCompletenessFixtures()
+	api, page, names := hongguoSearchCompletenessFixtures()
 	seasons := hongguoManySeasonFixtures()
 	loader := routerLoaderMap(parseRouterData(page), "search_(keyword)/page")
 	for _, row := range anyList(loader["searchList"]) {
@@ -67,6 +67,27 @@ func TestSearchCompletenessBrowserFixture(t *testing.T) {
 				return rankingHTTPResponse(r, 200, names), nil
 			}
 			return rankingHTTPResponse(r, 200, `{"suggest_list":[]}`), nil
+		}
+		if r.URL.Path == "/api/search/result" {
+			if query == hongguoManySeasonQuery {
+				return rankingHTTPResponse(r, 200, seasons["api"]), nil
+			}
+			if query == "综合故障" || query == "全部故障" {
+				return rankingHTTPResponse(r, 200, `{}`), nil
+			}
+			if query == hongguoSeasonSearchQuery {
+				return rankingHTTPResponse(r, 200, api), nil
+			}
+			rows := []any{}
+			if query != "无结果" {
+				id := "7200000000000000001"
+				if query == "慢搜索" {
+					id = "7200000000000000002"
+				}
+				rows = append(rows, map[string]any{"video_data": map[string]any{"series_id": id, "series_title": query, "episode_cnt": 12}})
+			}
+			body, _ := json.Marshal(map[string]any{"searchList": rows, "totalCount": len(rows), "hasMore": false})
+			return rankingHTTPResponse(r, 200, string(body)), nil
 		}
 		if strings.HasPrefix(r.URL.Path, "/search/") {
 			query = strings.TrimPrefix(r.URL.Path, "/search/")

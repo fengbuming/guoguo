@@ -51,7 +51,8 @@ func hongguoManySeasonFixtures() map[string]string {
 			records = append(records, map[string]any{"name": "谁说没灵根不能修仙第二季", "word_type": "common_query"})
 		} else if strings.HasSuffix(query, "第七季") {
 			records = append(records,
-				map[string]any{"name": hongguoManySeasonTitle + "第35季", "word_type": "short_play_name", "keyword": "7300000000000000035"},
+				// common_query 的数字编号属于榜单/检索词，白名单之外不应入选。
+				map[string]any{"name": hongguoManySeasonTitle + "第35季", "word_type": "common_query", "keyword": "7300000000000000035"},
 				map[string]any{"name": "修仙小说", "word_type": "title", "video_data": hongguoManySeasonVideo(31)},
 				map[string]any{"name": "其他作品第七季", "word_type": "short_play_name", "video_data": map[string]any{"series_id": "7300000000000000900", "series_title": "其他作品第七季"}},
 				map[string]any{"name": hongguoManySeasonTitle + "第七部", "word_type": "short_play_name", "video_data": map[string]any{"series_id": "7300000000000000901", "series_title": hongguoManySeasonTitle + "第七部"}},
@@ -66,6 +67,10 @@ func hongguoManySeasonFixtures() map[string]string {
 		rows = append(rows, map[string]any{"video_data": hongguoManySeasonVideo(season)})
 	}
 	rows = append(rows, map[string]any{"video_data": map[string]any{"series_id": "7300000000000000999", "series_title": "修仙相关作品"}})
+	// 2026-11 起综合搜索走匿名 JSON 接口 /api/search/result，searchList 结构
+	// 与页面 routerData 同源；旧 HTML 页面保留为兜底。
+	api, _ := json.Marshal(map[string]any{"searchList": rows, "totalCount": 233, "hasMore": false})
+	results["api"] = string(api)
 	body, _ := json.Marshal(map[string]any{"loaderData": map[string]any{"search_(keyword)/page": map[string]any{"query": hongguoManySeasonQuery, "isSuccess": true, "totalCount": 233, "searchList": rows}}})
 	results["page"] = "<script>window._ROUTER_DATA=" + string(body) + "</script>"
 	return results
@@ -81,9 +86,16 @@ func hongguoManySeasonTransport(t *testing.T, fixtures map[string]string, before
 			t.Error("search fetched an unrelated host", request.URL.Host)
 		}
 		query := request.URL.Query().Get("query")
-		if request.URL.Path == "/search/"+hongguoManySeasonQuery {
+		switch request.URL.Path {
+		case "/api/search/result":
+			if query != hongguoManySeasonQuery {
+				t.Errorf("unexpected api search query %q", query)
+			}
+			query = "api"
+		case "/search/" + hongguoManySeasonQuery:
 			query = "page"
-		} else if request.URL.Path != "/incent_resource/suggestion" {
+		case "/incent_resource/suggestion":
+		default:
 			t.Error("search fetched something other than text search data", request.URL.Path)
 		}
 		body, ok := fixtures[query]
@@ -207,7 +219,8 @@ func TestHongguoSearchSeasonFallbackRequiresVerifiedMetadata(t *testing.T) {
 		query := r.URL.Query().Get("query")
 		queries = append(queries, query)
 		if query == "修仙第二季" {
-			return rankingHTTPResponse(r, 200, `{"suggest_list":[{"name":"修仙第二季","word_type":"short_play_name","keyword":"7300000000000000002"}]}`), nil
+			// common_query 的数字编号不入白名单，必须换数字风格再试。
+			return rankingHTTPResponse(r, 200, `{"suggest_list":[{"name":"修仙第二季","word_type":"common_query","keyword":"7300000000000000002"}]}`), nil
 		}
 		if query == "修仙第2季" {
 			return rankingHTTPResponse(r, 200, `{"suggest_list":[{"name":"修仙第二季","word_type":"short_play_name","video_data":{"series_id":7300000000000000002,"series_title":"修仙第二季","episode_cnt":42}}]}`), nil

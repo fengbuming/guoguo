@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// 2026-11 起综合搜索走匿名 JSON 接口 /api/search/result（searchList 结构与
+// 旧页面 routerData 同源）；HTML 页面解析保留为兜底。
+const searchSortAPIFixture = `{"searchList":[
+{"video_data":{"series_id":"7000000000000000001","series_title":"测试甲","create_time":"1787626382","hot_score_data":{"score":20019,"text":"2万热度"}}},
+{"video_data":{"series_id":"7000000000000000002","series_title":"测试乙","create_time":"1786502463","hot_score_data":{"score":0,"text":"0热度"}}},
+{"video_data":{"series_id":"7000000000000000003","series_title":"测试丙","create_time":"1788610261","score":"9.9"}}
+],"totalCount":30,"hasMore":false}`
+
 const searchSortFixture = `<script>window._ROUTER_DATA={"loaderData":{"search_layout":null,"search_(keyword)/page":{"query":"测试","isSuccess":true,"totalCount":30,"searchList":[
 {"video_data":{"series_id":"7000000000000000001","series_title":"测试甲","create_time":"1787626382","hot_score_data":{"score":20019,"text":"2万热度"}}},
 {"video_data":{"series_id":"7000000000000000002","series_title":"测试乙","create_time":"1786502463","hot_score_data":{"score":0,"text":"0热度"}}},
@@ -19,10 +27,10 @@ const searchSortFixture = `<script>window._ROUTER_DATA={"loaderData":{"search_la
 
 func TestHongguoSearchSortMetadata(t *testing.T) {
 	d := rankingTestDownloader(t, func(request *http.Request) (*http.Response, error) {
-		if request.URL.Host != "hongguoduanju.com" || request.URL.Path != "/search/测试" {
+		if request.URL.Host != "hongguoduanju.com" || request.URL.Path != "/api/search/result" || request.URL.Query().Get("query") != "测试" {
 			t.Fatalf("unexpected request: %s", request.URL.Path)
 		}
-		return rankingHTTPResponse(request, http.StatusOK, searchSortFixture), nil
+		return rankingHTTPResponse(request, http.StatusOK, searchSortAPIFixture), nil
 	})
 	result, err := d.fetchHongguoSearchPage(context.Background(), "测试")
 	if err != nil {
@@ -70,9 +78,9 @@ func TestLibrarySearchReturnsMergedSortMetadata(t *testing.T) {
 		if request.URL.Path == "/incent_resource/suggestion" {
 			return rankingHTTPResponse(request, http.StatusOK, `{"suggest_list":[]}`), nil
 		}
-		if request.URL.Path == "/search/测试" {
+		if request.URL.Path == "/api/search/result" {
 			calls.Add(1)
-			return rankingHTTPResponse(request, http.StatusOK, searchSortFixture), nil
+			return rankingHTTPResponse(request, http.StatusOK, searchSortAPIFixture), nil
 		}
 		select {
 		case <-release:

@@ -2,7 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -261,18 +265,60 @@ func (downloader *Downloader) fetchHongguoSearchNames(ctx context.Context, keywo
 	if err != nil {
 		return nil, err
 	}
+	return hongguoSearchNameDramas(records), nil
+}
+
+// hongguoSuggestionKeyword 提取联想记录 keyword 字段的文本（UseNumber 下为
+// json.Number，普通解码为 string），大整数编号不允许走 float 精度损失。
+func hongguoSuggestionKeyword(record hongguoSuggestionRecord) string {
+	switch value := record.Keyword.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case json.Number:
+		return value.String()
+	default:
+		return ""
+	}
+}
+
+// hongguoSuggestSeriesID：keyword 提取的编号须为 6 位以上纯数字，
+// 避免把纯数字搜索词（common_query）误当剧集编号。
+func hongguoSuggestSeriesID(id string) bool {
+	return len(id) >= 6 && hongguoNumericID.MatchString(id)
+}
+
+// hongguoSuggestDramaWordType：联想词条里可作为剧目的类型白名单。
+// 实测（2026-11）short_play_name/title/album 的 keyword 均为剧集编号；
+// common_query 是检索词（keyword 为哈希或短语），actor_name 的编号属于演员
+// 而非剧集，一律不作为搜索结果。
+func hongguoSuggestDramaWordType(wordType string) bool {
+	switch wordType {
+	case "short_play_name", "title", "album":
+		return true
+	}
+	return false
+}
+
+// hongguoSearchNameDramas 把联想记录转成搜索结果。
+// 2026-11 联想接口变化：部分剧集（如《42光年》）放在 title 词条，video_data
+// 为空、剧集编号记在 keyword 字段；以 word_type 白名单 + 能解析出有效剧集
+// 编号（video_data.series_id 或 keyword）为准。
+func hongguoSearchNameDramas(records []hongguoSuggestionRecord) []Drama {
 	dramas := make([]Drama, 0, len(records))
 	for _, record := range records {
-
-		if record.WordType != "short_play_name" || !hongguoNumericID.MatchString(mapString(record.VideoData, "series_id_str", "series_id")) {
+		if !hongguoSuggestDramaWordType(record.WordType) {
 			continue
 		}
-		drama := hongguoDramaFromAny(map[string]any{"video_data": record.VideoData, "name": record.Name, "keyword": record.Keyword}, "短剧")
+		seriesID := firstNonEmpty(mapString(record.VideoData, "series_id_str", "series_id"), hongguoSuggestionKeyword(record))
+		if !hongguoSuggestSeriesID(seriesID) {
+			continue
+		}
+		drama := hongguoDramaFromAny(map[string]any{"video_data": record.VideoData, "name": record.Name, "keyword": seriesID}, "短剧")
 		if drama.ID != "" && drama.DisplayTitle() != drama.SourceID {
 			dramas = append(dramas, drama)
 		}
 	}
-	return dramas, nil
+	return dramas
 }
 
 func cloneHongguoSearchEntry(entry hongguoSearchEntry) hongguoSearchEntry {
@@ -321,9 +367,129 @@ func hongguoTitleSearchRank(title, query string) int {
 	}
 }
 
+// hongguoSearchAPIPages：综合搜索最多拉取的分页数；接口按热度返回模糊召回，
+// 精确匹配主要靠联想名称路线，这里只需要恢复热门召回通道。
+const hongguoSearchAPIPages = 3
+
+// fetchHongguoSearchPage 抓红果综合搜索结果。
+// 2026-11-13 起搜索页改为客户端渲染（X-Modernjs-Render: client），HTML 不再
+// 内嵌 routerData；页面脚本实际调用匿名 JSON 接口 GET /api/search/result，
+// 其 searchList/totalCount 与旧 SSR 数据同源，优先走该接口，旧 HTML 解析
+// 保留为兜底。
 func (downloader *Downloader) fetchHongguoSearchPage(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
-	pageURL := hongguoBaseURL + "/search/" + url.PathEscape(keyword)
-	body, err := downloader.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")
+	entry, err := downloader.fetchHongguoSearchAPI(ctx, keyword)
+	if err == nil {
+		return entry, nil
+	}
+	return downloader.fetchHongguoSearchHTML(ctx, keyword)
+}
+
+type hongguoSearchAPIPayload struct {
+	Code       string      `json:"code"`
+	Message    string      `json:"message"`
+	SearchList []any       `json:"searchList"`
+	TotalCount json.Number `json:"totalCount"`
+	HasMore    bool        `json:"hasMore"`
+}
+
+func (downloader *Downloader) fetchHongguoSearchAPI(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
+	base := strings.TrimRight(downloader.providerBaseURL(sourceHongguo), "/")
+	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, 20)}
+	for page := 1; page <= hongguoSearchAPIPages; page++ {
+		if err := ctx.Err(); err != nil {
+			return hongguoSearchEntry{}, err
+		}
+		params := url.Values{"aid": {"8662"}, "query": {keyword}, "page": {strconv.Itoa(page)}}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/search/result?"+params.Encode(), nil)
+		if err != nil {
+			if page > 1 {
+				break
+			}
+			return hongguoSearchEntry{}, err
+		}
+		request.Header.Set("User-Agent", userAgent)
+		request.Header.Set("Accept", "application/json, text/plain, */*")
+		request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+		request.Header.Set("Referer", hongguoBaseURL+"/")
+		response, err := downloader.doCatalogRequestWithTimeout(request, hongguoSearchPageTimeout)
+		if err != nil {
+			if page > 1 {
+				break
+			}
+			return hongguoSearchEntry{}, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
+		closeErr := response.Body.Close()
+		if readErr == nil {
+			readErr = closeErr
+		}
+		if readErr != nil {
+			if page > 1 {
+				break
+			}
+			return hongguoSearchEntry{}, readErr
+		}
+		if len(body) > providerMaxBodyBytes {
+			if page > 1 {
+				break
+			}
+			return hongguoSearchEntry{}, fmt.Errorf("红果搜索响应超过 %d 字节", providerMaxBodyBytes)
+		}
+		if response.StatusCode != http.StatusOK || catalogResponseBlockReason(response, body) != "" {
+			if page > 1 {
+				break
+			}
+			return hongguoSearchEntry{}, downloader.catalogResponseError(request, response, body)
+		}
+		payload, err := parseHongguoSearchAPIResponse(body)
+		if err != nil {
+			if page > 1 {
+				break
+			}
+			return hongguoSearchEntry{}, err
+		}
+		for _, row := range payload.SearchList {
+			if drama := hongguoDramaFromAny(row, "短剧"); drama.ID != "" {
+				entry.Dramas = mergeHongguoSearchDramas(entry.Dramas, []Drama{drama})
+			}
+		}
+		if page == 1 {
+			if total, err := payload.TotalCount.Int64(); err == nil {
+				entry.Total = int(total)
+			}
+		}
+		if !payload.HasMore {
+			break
+		}
+	}
+	entry.Total = max(entry.Total, len(entry.Dramas))
+	entry.Limited = entry.Total > len(entry.Dramas)
+	return entry, nil
+}
+
+func parseHongguoSearchAPIResponse(body []byte) (hongguoSearchAPIPayload, error) {
+	var payload hongguoSearchAPIPayload
+	// 剧集编号为 19 位整数：UseNumber 解码避免 float64 精度损失
+	// （7648238378667740184 会被舍入成 7648238378667740160）。
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return hongguoSearchAPIPayload{}, fmt.Errorf("红果搜索未返回有效结果: %w", err)
+	}
+	if payload.Code != "" {
+		return hongguoSearchAPIPayload{}, fmt.Errorf("红果搜索暂不可用: %s", firstNonEmpty(payload.Message, payload.Code))
+	}
+	if payload.SearchList == nil {
+		return hongguoSearchAPIPayload{}, errors.New("红果搜索未返回有效结果")
+	}
+	return payload, nil
+}
+
+// fetchHongguoSearchHTML 为 2026-11 改版前的页面解析路径，现仅作兜底。
+func (downloader *Downloader) fetchHongguoSearchHTML(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
+	base := strings.TrimRight(downloader.providerBaseURL(sourceHongguo), "/")
+	pageURL := base + "/search/" + url.PathEscape(keyword)
+	body, err := downloader.fetchProviderText(ctx, pageURL, base+"/")
 	if err != nil {
 		return hongguoSearchEntry{}, err
 	}
