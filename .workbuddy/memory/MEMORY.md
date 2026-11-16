@@ -48,3 +48,10 @@
 - 修复：`maxSessions=0` = 不限制；新开播放自动回收本 viewer 的闲置/最旧会话；管理员 `POST /api/ui/admin/playback/cleanup` 一键清空；设置面板与播放器 429 错误处均有清理按钮。日志事件 `playback.session_reclaimed` / `sessions_cleared`。
 - 源码备份 `短剧库/短剧库/_backup_playback_20261107/`；线上备份 `/opt/juku/backup/20261107-173933/`（LAST）；本机 `dist/juku.exe` 已换（旧版 `dist/juku.exe.bak-20261107`）。线上仍保留 maxSessions=4，彻底关闭需在面板填 0。
 - 提交 `8b52011`（perf/library-disk-cache，已推送）；线上二进制为从该提交 `git worktree` 干净检出的产物，sha `53c38d08…`（`dist/juku-linux-8b52011`）。
+
+## 黄果AI 取址（2026-11-16，e0eaa83）
+- 站点 2026-11-13 改版：`videoInitialData` 的 videoSrc/epPlaySrcs 变空，旧 `GET /api/videos/{id}/play` 返回空 `video_url`；现行 `POST /api/videos/{id}/episodes/{ep}/playback`、body `{}` → `data.streams.main` m3u8（AES-128，key/ts 为绝对签名地址，无需 CDN 头）。明文匿名即可，`dx150-edge-v1` 加密通道不必实现；每次播放都要重新 POST。
+- 完全版 `provider_huangguoai_playback.go` 优先新取址、失败回退旧页面解析；集号取 PageURL `/ep-N/` 或 CurrentEpisode；域名候选 配置→providerHosts→huangguoai.com→huangguoai.ai→章节页 host。**专用版无黄果AI provider，勿改**。
+- 本机 `data/juku.json` 已配 Clash `http://127.0.0.1:7897/`（本机直连 huangguoai.com 超时）；VPS 出口直连可用。
+- 全量测试需额外 skip `TestEmbeddedInterfaceServesModulesWithoutExternalBuild`（前端 import 带 `?v=` 与测试正则不匹配，既有失败）。
+- 线上二进制 sha `676941af…`（`dist/juku-linux-e0eaa83`），备份 `/opt/juku/backup/20261116-100158/`。
