@@ -19,7 +19,7 @@ type providerMedia struct {
 	HLSKey       []byte
 	CENCKey      []byte
 	AudioCENCKey []byte
-	Quality int
+	Quality      int
 	// Variants 是不同清晰度的候选（用于降级与画质选择）。
 	Variants []providerMedia
 	// Backups 是同一清晰度的备用 CDN 节点地址：续读时优先换节点而不是降清晰度。
@@ -165,7 +165,19 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 			media.Referer = client.host + "/home"
 		}
 	}
-	if chapter.PageURL != "" && (chapter.Source == sourceHuangguoAI || chapter.Source == sourceHuangguoVideo) {
+	// 2026-11-13 起黄果AI 播放页不再内联片源（videoSrc / epPlaySrcs 为空），
+	// 首播统一走新版 POST 取址；失败时仍保留旧页面解析作为兼容回退。
+	// 新链路只替换取址一步，既有片源解析、续读换节点与播放优化不变。
+	var huangguoAIPlaybackErr error
+	if chapter.Source == sourceHuangguoAI {
+		if fresh, err := d.fetchHuangguoAIPlayback(ctx, task, chapter); err == nil {
+			media.URL = fresh.URL
+			media.Referer = fresh.Referer
+		} else {
+			huangguoAIPlaybackErr = err
+		}
+	}
+	if !isProviderHTTPMediaURL(media.URL) && chapter.PageURL != "" && (chapter.Source == sourceHuangguoAI || chapter.Source == sourceHuangguoVideo) {
 		body, pageURL, err := d.fetchProviderTextURL(ctx, chapter.PageURL, media.Referer)
 		if err != nil {
 			return providerMedia{}, err
@@ -178,6 +190,9 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 		media.Referer = pageURL
 	}
 	if !isProviderHTTPMediaURL(media.URL) {
+		if huangguoAIPlaybackErr != nil {
+			return providerMedia{}, fmt.Errorf("%s 未返回有效播放地址（新版取址失败：%v），请刷新章节或确认站点访问权限", chapter.Source, huangguoAIPlaybackErr)
+		}
 		return providerMedia{}, fmt.Errorf("%s 未返回有效播放地址，请刷新章节或确认站点访问权限", chapter.Source)
 	}
 	parsed, _ := url.Parse(media.URL)
