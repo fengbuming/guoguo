@@ -33,19 +33,19 @@ func hongguoSearchCompletenessFixtures() (string, string, string) {
 
 	rows = append(rows, seasons[0], seasons[1], seasons[3])
 	for i := 0; i < 7; i++ {
-		rows = append(rows, map[string]any{"video_data": map[string]any{"series_id": fmt.Sprintf("70000000000000001%02d", i), "series_title": fmt.Sprintf("相关剧集%d", i), "series_intro": "冒险相关内容", "category_name": "短剧", "hot_score_data": map[string]any{"score": 9000 + i}}})
+		rows = append(rows, map[string]any{"video_data": map[string]any{"series_id": fmt.Sprintf("70000000000000001%02d", i), "series_title": fmt.Sprintf("相关剧集%d：%s", i, hongguoSeasonSearchQuery), "series_intro": "冒险相关内容", "category_name": "短剧", "hot_score_data": map[string]any{"score": 9000 + i}}})
 	}
 
 	for i := 0; i < 15; i++ {
 		id := fmt.Sprintf("70000000000000002%02d", i)
-		names = append(names, map[string]any{"name": fmt.Sprintf("其他名称%d", i), "word_type": "short_play_name", "video_data": map[string]any{"series_id": json.Number(id), "series_title": fmt.Sprintf("其他名称%d", i)}})
+		names = append(names, map[string]any{"name": fmt.Sprintf("其他名称%d：%s", i, hongguoSeasonSearchQuery), "word_type": "short_play_name", "video_data": map[string]any{"series_id": json.Number(id), "series_title": fmt.Sprintf("其他名称%d：%s", i, hongguoSeasonSearchQuery)}})
 	}
 	names = append(names, names[1],
 		// 2026-11 新格式：title 词条编号记在 keyword、video_data 为空；
 		// short_play_name 也会只给 keyword（第七季实测如此）。
 		map[string]any{"name": "无限叠加攻击小说", "word_type": "title", "keyword": "7358413860274965529"},
 		map[string]any{"name": hongguoSeasonSearchTitle + "第六季", "word_type": "short_play_name", "keyword": "7681547176396213272"},
-		map[string]any{"name": "没有剧集元数据", "word_type": "short_play_name", "keyword": "7000000000000000999", "video_data": map[string]any{"episode_cnt": 10}},
+		map[string]any{"name": hongguoSeasonSearchQuery + "：没有剧集元数据", "word_type": "short_play_name", "keyword": "7000000000000000999", "video_data": map[string]any{"episode_cnt": 10}},
 		// 白名单之外的数字编号（榜单/演员）不应成为剧目。
 		map[string]any{"name": "叠加攻击榜单", "word_type": "common_query", "keyword": "1000000000000000001"},
 		map[string]any{"name": "演员词条", "word_type": "actor_name", "keyword": "1000000000000000002"},
@@ -107,9 +107,21 @@ func TestHongguoSearchCompletesMissingSeasonsBeyondFirstTen(t *testing.T) {
 		}
 	}
 
-	result.Dramas[1].Title, result.Dramas[1].Tags[0] = "改动", "改动"
+	// 标题以关键词开头的名称词条会排在最前（rank 1），它们没有标签；
+	// 这里按「首个带标签的条目」定位，避免依赖具体排序位置。
+	target := -1
+	for index, drama := range result.Dramas {
+		if len(drama.Tags) > 0 {
+			target = index
+			break
+		}
+	}
+	if target < 0 {
+		t.Fatal("结果里没有带标签的条目")
+	}
+	result.Dramas[target].Title, result.Dramas[target].Tags[0] = "改动", "改动"
 	result, err = d.searchHongguoDramas(context.Background(), " "+hongguoSeasonSearchQuery+" ")
-	if err != nil || result.Dramas[1].Title == "改动" || result.Dramas[1].Tags[0] == "改动" || pageCalls.Load() != 1 || nameCalls.Load() != 1 {
+	if err != nil || result.Dramas[target].Title == "改动" || len(result.Dramas[target].Tags) == 0 || result.Dramas[target].Tags[0] == "改动" || pageCalls.Load() != 1 || nameCalls.Load() != 1 {
 		t.Fatal("combined search cache was not isolated or reused", err, pageCalls.Load(), nameCalls.Load())
 	}
 }

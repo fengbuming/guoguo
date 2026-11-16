@@ -265,7 +265,81 @@ func (downloader *Downloader) fetchHongguoSearchNames(ctx context.Context, keywo
 	if err != nil {
 		return nil, err
 	}
-	return hongguoSearchNameDramas(records), nil
+	return hongguoFilterSearchNames(hongguoSearchNameDramas(records), keyword), nil
+}
+
+// hongguoFilterSearchNames 过滤联想结果里与关键词毫无关系的条目。
+//
+// 联想接口按上游自己的模糊度返回词条：实测搜「天机入梦」会夹带「持械入宋」
+// 「晴天放手」，搜「战神」会夹带「退役归来，这个保镖不好惹」。判定标准：
+// 标题命中完整关键词，或与关键词有至少两个连续字符重合，且重合段里含中日韩
+// 字符（这样「42光年」不会因为共用「42」带出「427元扳倒老油条」，而「v4光年」
+// 仍能靠「光年」带出《42光年》）。
+func hongguoFilterSearchNames(dramas []Drama, keyword string) []Drama {
+	if hongguoSearchText(keyword) == "" {
+		return dramas
+	}
+	filtered := make([]Drama, 0, len(dramas))
+	for _, drama := range dramas {
+		if hongguoSearchNameRelevant(drama.DisplayTitle(), keyword) {
+			filtered = append(filtered, drama)
+		}
+	}
+	return filtered
+}
+
+func hongguoSearchNameRelevant(title, keyword string) bool {
+	if hongguoSearchTitleMatches(title, keyword) {
+		return true
+	}
+	query := []rune(hongguoSearchText(keyword))
+	if len(query) == 0 {
+		return false
+	}
+	normalized := []rune(hongguoSearchText(title))
+	if len(query) == 1 {
+		return strings.ContainsRune(string(normalized), query[0])
+	}
+	run := hongguoSearchCommonRun(query, normalized)
+	if len(run) < 2 {
+		return false
+	}
+	if !hongguoSearchHasCJK(query) {
+		// 关键词本身就是字母数字（zzz、v4），重合段无需含汉字。
+		return true
+	}
+	return hongguoSearchHasCJK(run)
+}
+
+// hongguoSearchCommonRun 返回两段文本最长的公共连续子串。
+func hongguoSearchCommonRun(left, right []rune) []rune {
+	best, bestEnd := 0, 0
+	prev := make([]int, len(right)+1)
+	current := make([]int, len(right)+1)
+	for i := 1; i <= len(left); i++ {
+		for j := 1; j <= len(right); j++ {
+			if left[i-1] != right[j-1] {
+				current[j] = 0
+				continue
+			}
+			current[j] = prev[j-1] + 1
+			if current[j] > best {
+				best, bestEnd = current[j], i
+			}
+		}
+		prev, current = current, prev
+	}
+	return left[bestEnd-best : bestEnd]
+}
+
+func hongguoSearchHasCJK(text []rune) bool {
+	for _, char := range text {
+		if unicode.Is(unicode.Han, char) || unicode.Is(unicode.Hiragana, char) ||
+			unicode.Is(unicode.Katakana, char) || unicode.Is(unicode.Hangul, char) {
+			return true
+		}
+	}
+	return false
 }
 
 // hongguoSuggestionKeyword 提取联想记录 keyword 字段的文本（UseNumber 下为
@@ -371,6 +445,20 @@ func hongguoTitleSearchRank(title, query string) int {
 // 精确匹配主要靠联想名称路线，这里只需要恢复热门召回通道。
 const hongguoSearchAPIPages = 3
 
+// hongguoSearchTitleMatches 是综合搜索列表的相关性闸门。
+//
+// 上游在 query 命中不足时不会返回空列表，而是下发「热门兜底流」：
+// 实测 query=42光年 / zzzzzz 都返回 95~108 部毫无关系的热剧（山野春潮、归墟…），
+// 且 totalCount 也变成兜底流的条数。整包照收会把这些剧混进搜索结果，
+// 表现为「搜出来的东西完全不沾边」。判定标准：标题命中完整关键词
+// （NFKC 归一、忽略大小写/空格/标点；多词查询按词全命中）。
+func hongguoSearchTitleMatches(title, query string) bool {
+	if hongguoSearchText(query) == "" {
+		return false
+	}
+	return hongguoTitleSearchRank(title, query) <= 3
+}
+
 // fetchHongguoSearchPage 抓红果综合搜索结果。
 // 2026-11-13 起搜索页改为客户端渲染（X-Modernjs-Render: client），HTML 不再
 // 内嵌 routerData；页面脚本实际调用匿名 JSON 接口 GET /api/search/result，
@@ -395,6 +483,8 @@ type hongguoSearchAPIPayload struct {
 func (downloader *Downloader) fetchHongguoSearchAPI(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
 	base := strings.TrimRight(downloader.providerBaseURL(sourceHongguo), "/")
 	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, 20)}
+	// trustTotal：第一页整页都是真实命中时，上游 totalCount 才可信。
+	trustTotal := false
 	for page := 1; page <= hongguoSearchAPIPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return hongguoSearchEntry{}, err
@@ -448,14 +538,33 @@ func (downloader *Downloader) fetchHongguoSearchAPI(ctx context.Context, keyword
 			}
 			return hongguoSearchEntry{}, err
 		}
+		matched, total := 0, len(payload.SearchList)
 		for _, row := range payload.SearchList {
-			if drama := hongguoDramaFromAny(row, "短剧"); drama.ID != "" {
-				entry.Dramas = mergeHongguoSearchDramas(entry.Dramas, []Drama{drama})
+			drama := hongguoDramaFromAny(row, "短剧")
+			if drama.ID == "" {
+				total--
+				continue
 			}
+			if !hongguoSearchTitleMatches(drama.DisplayTitle(), keyword) {
+				// 命中不足时上游会用热门兜底流填满列表，这些条目与关键词无关。
+				continue
+			}
+			matched++
+			entry.Dramas = mergeHongguoSearchDramas(entry.Dramas, []Drama{drama})
 		}
 		if page == 1 {
-			if total, err := payload.TotalCount.Int64(); err == nil {
-				entry.Total = int(total)
+			if matched == 0 {
+				// 第一页全是兜底流：说明该关键词在上游搜索索引里没有命中，
+				// 后续页同样只是兜底，继续拉只会引入更多无关剧集。
+				entry.Dramas = nil
+				break
+			}
+			// totalCount 只有在整页都是真实命中时才可信；混了兜底流时它等于
+			// 兜底流的条数（实测 ~100），拿去当结果总数会误导用户。
+			if trustTotal = matched == total; trustTotal {
+				if count, err := payload.TotalCount.Int64(); err == nil {
+					entry.Total = int(count)
+				}
 			}
 		}
 		if !payload.HasMore {
@@ -464,6 +573,11 @@ func (downloader *Downloader) fetchHongguoSearchAPI(ctx context.Context, keyword
 	}
 	entry.Total = max(entry.Total, len(entry.Dramas))
 	entry.Limited = entry.Total > len(entry.Dramas)
+	if !trustTotal {
+		// 兜底流场景下 totalCount 不可信，直接以实际命中数为准。
+		entry.Total = len(entry.Dramas)
+		entry.Limited = false
+	}
 	return entry, nil
 }
 

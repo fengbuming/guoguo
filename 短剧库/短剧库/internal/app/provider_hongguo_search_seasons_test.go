@@ -66,7 +66,7 @@ func hongguoManySeasonFixtures() map[string]string {
 	for _, season := range []int{1, 34, 33, 2, 32, 31, 4, 5, 25} {
 		rows = append(rows, map[string]any{"video_data": hongguoManySeasonVideo(season)})
 	}
-	rows = append(rows, map[string]any{"video_data": map[string]any{"series_id": "7300000000000000999", "series_title": "修仙相关作品"}})
+	rows = append(rows, map[string]any{"video_data": map[string]any{"series_id": "7300000000000000999", "series_title": hongguoManySeasonTitle + "相关作品"}})
 	// 2026-11 起综合搜索走匿名 JSON 接口 /api/search/result，searchList 结构
 	// 与页面 routerData 同源；旧 HTML 页面保留为兜底。
 	api, _ := json.Marshal(map[string]any{"searchList": rows, "totalCount": 233, "hasMore": false})
