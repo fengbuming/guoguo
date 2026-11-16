@@ -83,6 +83,8 @@ func (app *UIApp) generatePlayback(ctx context.Context, media *playbackMediaSess
 		}
 		defer proxy.Close()
 		proxy.acquire = func(ctx context.Context) (func(), error) { return app.mediaResources().acquire(ctx, "media", false) }
+		// 分离音轨必须一起注册：封装路径同样要拿到第二路输入，否则产物只有视频轨。
+		attachPlaybackAudioTrack(&media.media, proxy)
 		input = proxy.root
 	} else {
 		input, err = filepath.Abs(input)

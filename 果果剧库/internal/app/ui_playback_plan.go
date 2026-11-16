@@ -58,6 +58,8 @@ func (app *UIApp) probePlaybackCodecs(ctx context.Context, media *playbackMediaS
 		}
 		defer proxy.Close()
 		proxy.acquire = func(ctx context.Context) (func(), error) { return app.mediaResources().acquire(ctx, "media", false) }
+		// 探测编码时也要带上分离音轨，否则 Audio 一直是 unknown，音频编码不受支持也发现不了。
+		attachPlaybackAudioTrack(&media.media, proxy)
 		input = proxy.root
 	}
 	args := playbackInputArgs(media.media, input, 0)

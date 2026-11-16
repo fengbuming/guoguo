@@ -100,29 +100,33 @@ func (app *UIApp) generatePlaybackWithParent(ctx, jobParent context.Context, med
 	// jobCtx 故意不再挂 ctx：plan 请求返回后 ctx 会被调用方 cancel，
 	// 而封装必须继续在后台跑完，否则「边生成边播」当场断流。
 	// 生命周期统一由 media.Close()/会话结束走 cancel 回收。
-	generated := &playbackGenerated{ctx: jobCtx, cancel: cancel, directory: directory, base: base, query: query,
-		media: media.media, resources: app.mediaResources(), done: make(chan struct{}), files: make(map[string]bool)}
-	media.generated = generated
 	input := media.local
 	var proxy *hlsProxy
 	if input == "" {
 		proxy, err = app.downloader.newHLSProxy(jobCtx, media.media, media.key)
 		if err != nil {
-			generated.Close()
+			cancel()
+			os.RemoveAll(directory)
 			release()
 			return err
 		}
 		proxy.acquire = func(ctx context.Context) (func(), error) { return app.mediaResources().acquire(ctx, "media", false) }
+		// 分离音轨必须一起注册：封装路径同样要拿到第二路输入，否则产物只有视频轨。
+		attachPlaybackAudioTrack(&media.media, proxy)
 		input = proxy.root
 	} else {
 		input, err = filepath.Abs(input)
 		if err != nil {
-			generated.Close()
+			cancel()
+			os.RemoveAll(directory)
 			release()
 			return err
 		}
 		input = filepath.ToSlash(input)
 	}
+	generated := &playbackGenerated{ctx: jobCtx, cancel: cancel, directory: directory, base: base, query: query,
+		media: media.media, resources: app.mediaResources(), done: make(chan struct{}), files: make(map[string]bool)}
+	media.generated = generated
 	command := ffmpegMediaCommand(jobCtx, ffmpeg, playbackGeneratedArgs(media.media, input, processing)...)
 
 	command.Dir = directory

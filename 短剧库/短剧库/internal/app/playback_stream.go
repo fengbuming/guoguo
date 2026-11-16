@@ -100,6 +100,21 @@ func (downloader *Downloader) resolvePlaybackMedia(ctx context.Context, task Tas
 	return providerMedia{URL: finalURL, Playlist: playlist, Duration: m3u8Duration(playlist), Referer: legacyFrontendURL + "/"}, key, nil
 }
 
+// attachPlaybackAudioTrack 把分离音轨（红果等受保护源的 DASH 音频轨）注册进播放代理，
+// 让 ffmpeg 以第二路输入读取。
+//
+// 漏掉这一步时 playbackInputArgs 只剩 "-map 0:a:0?"，而视频轨本身没有音频，
+// 封装产物就只有视频轨：浏览器表现为「完全没声音」并且原生控件把音量按钮禁用
+// （没有音轨时 Chrome 会禁用音量控件），很容易被误判成前端或声卡问题。
+func attachPlaybackAudioTrack(media *providerMedia, proxy *hlsProxy) {
+	if media == nil || proxy == nil || media.AudioURL == "" || media.audioInput != "" {
+		return
+	}
+	if audio := proxy.addAsset(hlsAsset{remote: media.AudioURL, extension: ".m4a"}); audio != "" {
+		media.audioInput = audio
+	}
+}
+
 func playbackInputArgs(media providerMedia, input string, offset float64) []string {
 	args := []string{"-hide_banner", "-loglevel", "info", "-nostats", "-nostdin", "-threads", "2", "-filter_threads", "1", "-filter_complex_threads", "1"}
 	if isProviderHTTPMediaURL(input) {
@@ -179,10 +194,7 @@ func (app *UIApp) preparePlaybackMedia(ctx context.Context, task Task, downloadI
 		if err != nil {
 			return providerMedia{}, "", nil, err
 		}
-		if media.AudioURL != "" {
-			// 音频轨经同一代理本地化，由 ffmpeg 作为第二路输入读取。
-			media.audioInput = proxy.addAsset(hlsAsset{remote: media.AudioURL, extension: ".m4a"})
-		}
+		attachPlaybackAudioTrack(&media, proxy)
 		proxy.acquire = func(request context.Context) (func(), error) {
 			if priority := ctx.Value(playbackPrefetchKey{}); priority != nil {
 				request = context.WithValue(request, playbackPrefetchKey{}, priority)
