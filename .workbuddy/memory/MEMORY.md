@@ -49,6 +49,13 @@
 - 源码备份 `短剧库/短剧库/_backup_playback_20261107/`；线上备份 `/opt/juku/backup/20261107-173933/`（LAST）；本机 `dist/juku.exe` 已换（旧版 `dist/juku.exe.bak-20261107`）。线上仍保留 maxSessions=4，彻底关闭需在面板填 0。
 - 提交 `8b52011`（perf/library-disk-cache，已推送）；线上二进制为从该提交 `git worktree` 干净检出的产物，sha `53c38d08…`（`dist/juku-linux-8b52011`）。
 
+## 红果搜索（2026-11-16，7e553c6）
+- 根因①：搜索页 2026-11-13 改 CSR（X-Modernjs-Render: client），HTML 无 routerData → 综合搜索必失败。改走匿名 JSON `GET hongguoduanju.com/api/search/result?aid=8662&query=&page=`（≤3 页），旧 HTML 解析兜底。
+- 根因②：联想新形态——部分剧在 `word_type=title`、video_data 空、编号在 `keyword`。名称匹配改白名单（short_play_name/title/album）+ 编号（video_data.series_id 或 keyword，≥6 位纯数字）；common_query 哈希/actor_name 拒收。
+- **新 JSON 解码必须 UseNumber**：19 位编号 float64 舍入 → 相邻季 ID 撞值被去重吞掉（丢 25/32 季的坑）。线上现返回字符串属防御。
+- 两版同步 `provider_hongguo_search.go`；线上二进制 sha `e2815b17…`（`dist/juku-linux-7e553c6`），备份 `/opt/juku/backup/20261116-191505/`。VPS 匿名搜索 401（requireLogin）→ 用 Linux 探针二进制直测通过。
+- 教训：勿对整个 internal/app 跑 gofmt -w（重排 + autocrlf 幻影 M）；幻影 M 用 `git add` 内容相同归一。8999 专用版仅本机更新，未上 VPS。
+
 ## 黄果AI 取址（2026-11-16，e0eaa83）
 - 站点 2026-11-13 改版：`videoInitialData` 的 videoSrc/epPlaySrcs 变空，旧 `GET /api/videos/{id}/play` 返回空 `video_url`；现行 `POST /api/videos/{id}/episodes/{ep}/playback`、body `{}` → `data.streams.main` m3u8（AES-128，key/ts 为绝对签名地址，无需 CDN 头）。明文匿名即可，`dx150-edge-v1` 加密通道不必实现；每次播放都要重新 POST。
 - 完全版 `provider_huangguoai_playback.go` 优先新取址、失败回退旧页面解析；集号取 PageURL `/ep-N/` 或 CurrentEpisode；域名候选 配置→providerHosts→huangguoai.com→huangguoai.ai→章节页 host。**专用版无黄果AI provider，勿改**。
