@@ -20,9 +20,10 @@ import (
 
 const hongguoProtectedPath = "/api/video/protected/play-info"
 
-// errHongguoProtectedLocked 表示该集需要登录或付费（匿名仅试看集可播放），
-// 收到此错误时无需再尝试其他取流路径。
-var errHongguoProtectedLocked = errors.New("红果该集需要登录或付费，匿名仅试看集可播放")
+// errHongguoProtectedLocked 表示网页试看接口未开放该集。这是 hongguoduanju.com
+// 播放器自身的试看集限制（accessible_episode_cnt，实测全站前 3 集），
+// 与账号登录、会员付费无关：App 匿名取址仍可播放全部集。
+var errHongguoProtectedLocked = errors.New("红果网页试看接口仅开放前几集（非登录或付费限制）")
 
 type hongguoProtectedTrack struct {
 	MainURL         string `json:"main_url"`
@@ -194,7 +195,7 @@ func (d *Downloader) fetchHongguoProtectedText(ctx context.Context, payload []by
 			continue
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			// 站点用 4xx/5xx + JSON 错误体表达“该集需要登录、付费或资源不可用”，
+			// 站点用 4xx/5xx + JSON 错误体表达“该集不在网页试看范围或资源不可用”，
 			// 交给解析层给出明确原因（如 encrypted_resource_unavailable），不再重试。
 			if isHongguoProtectedErrorStatus(response.StatusCode) && json.Valid(body) && bytes.Contains(body, []byte(`"error"`)) {
 				return string(body), nil

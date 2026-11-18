@@ -5,6 +5,7 @@ go 1.24.1
 require (
 	github.com/bogdanfinn/fhttp v0.6.9
 	github.com/bogdanfinn/tls-client v1.16.0
+	github.com/beilunyang/openhongguo v0.4.1-0.20261118120351-33c888d3a8a2
 	golang.org/x/text v0.32.0
 )
 

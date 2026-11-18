@@ -210,8 +210,16 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if !hongguoNumericID.MatchString(videoID) || !hongguoNumericID.MatchString(seriesID) {
 		return providerMedia{}, fmt.Errorf("红果章节 ID 无效，请重新获取章节")
 	}
-	// App 取址链路（multi_video_model）匿名可用，覆盖全部集与 360p~1080p
-	// 全部清晰度，优先于只提供试看集的网页受保护接口。
+	// 现行 V5 取址（player/v1）匿名可用，覆盖全部集与 360p~1080p 全部清晰度。
+	// 旧 multi_video_model / video_tab 链路自 2026-11 中旬起被上游静默丢弃，
+	// 仅作兼容回退；网页受保护接口只开放试看集，不能据此判断需要登录或付费。
+	media, v5Err := d.resolveHongguoV5Media(ctx, videoID)
+	if v5Err == nil {
+		return media, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return providerMedia{}, err
+	}
 	media, modelErr := d.resolveHongguoModelMedia(ctx, videoID)
 	if modelErr == nil {
 		return media, nil
@@ -245,11 +253,11 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 		return media, nil
 	}
 	hint := ""
-	if errors.Is(modelErr, errHongguoPlayerEmpty) {
+	if errors.Is(v5Err, errHongguoPlayerEmpty) || errors.Is(modelErr, errHongguoPlayerEmpty) {
 		hint = "（红果取址接口对本机全部集群返回空响应，属上游临时限制，稍后重试或更换网络更有效）"
 	}
-	return providerMedia{}, fmt.Errorf("App 取址失败%s：%v；红果受保护取流失败：%v；App 老路取流失败：%v；网页取流失败：%v；备用取流失败：%w",
-		hint, publicError(modelErr), publicError(protectedErr), publicError(nativeErr), publicError(pageErr), apiErr)
+	return providerMedia{}, fmt.Errorf("V5 取址失败：%v；App 取址失败%s：%v；红果受保护取流失败：%v；App 老路取流失败：%v；网页取流失败：%v；备用取流失败：%w",
+		publicError(v5Err), hint, publicError(modelErr), publicError(protectedErr), publicError(nativeErr), publicError(pageErr), apiErr)
 }
 
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
@@ -265,7 +273,7 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 	info, _ := page["video_player_info"].(map[string]any)
 	mediaURL := mapString(info, "main_url")
 	if !isProviderHTTPMediaURL(mediaURL) {
-		return providerMedia{}, fmt.Errorf("红果该集未提供公开播放地址，可能需要登录或 App 授权；不会将试看集冒充该集下载")
+		return providerMedia{}, fmt.Errorf("红果网页播放器未返回该集的公开地址（网页仅开放试看集）；不会将试看集冒充该集下载")
 	}
 	duration, _ := strconv.ParseFloat(mapString(info, "duration"), 64)
 	return providerMedia{URL: mediaURL, Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}, nil
